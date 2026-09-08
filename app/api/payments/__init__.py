@@ -20,6 +20,39 @@ repay_in = ns.model(
     },
 )
 
+error_out = ns.model("ErrorResponse", {"message": fields.String})
+payment_txn_out = ns.model(
+    "PaymentTransaction",
+    {
+        "id": fields.Integer,
+        "loan_id": fields.Integer,
+        "repayment_schedule_id": fields.Integer,
+        "amount": fields.Float,
+        "payment_method": fields.String,
+        "status": fields.String(example="completed"),
+        "paid_at": fields.String,
+    },
+)
+payment_result_out = ns.model(
+    "PaymentResult",
+    {
+        "transaction": fields.Nested(payment_txn_out),
+        "installment": fields.Raw(
+            description="{installment_number, amount_due, amount_paid, shortfall, overpaid, status}"
+        ),
+        "loan_status": fields.String,
+        "loan_completed": fields.Boolean,
+    },
+)
+payment_list_out = ns.model(
+    "LoanPaymentList",
+    {
+        "loan_id": fields.Integer,
+        "count": fields.Integer,
+        "payments": fields.List(fields.Nested(payment_txn_out)),
+    },
+)
+
 
 def _current_user() -> User:
     user = db.session.get(User, current_user_id())
@@ -31,13 +64,13 @@ def _current_user() -> User:
 @ns.route("/repay")
 class Repay(Resource):
     @ns.doc(security="Bearer")
-    @ns.expect(repay_in, validate=True)
-    @ns.response(201, "Payment recorded")
-    @ns.response(403, "Not your loan")
-    @ns.response(409, "Installment already paid / loan not active")
+    @ns.expect(repay_in)
+    @ns.response(201, "Payment recorded", payment_result_out)
+    @ns.response(403, "Not your loan", error_out)
+    @ns.response(409, "Installment already paid / loan not active", error_out)
     @roles_required("customer", "loan_officer", "admin")
     def post(self):
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         try:
             result = payment_processing.record_payment(
                 _current_user(),
@@ -53,7 +86,7 @@ class Repay(Resource):
 @ns.route("/loan/<int:loan_id>")
 class LoanPayments(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "Payments recorded against this loan")
+    @ns.response(200, "Payments recorded against this loan", payment_list_out)
     @roles_required("customer", "loan_officer", "admin")
     def get(self, loan_id: int):
         try:

@@ -36,6 +36,67 @@ decision_in = ns.model(
     },
 )
 
+# --------------------------------------------------------------- response models
+error_out = ns.model("ErrorResponse", {"message": fields.String})
+schedule_item_out = ns.model(
+    "RepaymentScheduleItem",
+    {
+        "installment_number": fields.Integer,
+        "due_date": fields.String,
+        "amount_due": fields.Float,
+        "amount_paid": fields.Float,
+        "status": fields.String(example="upcoming"),
+    },
+)
+application_out = ns.model(
+    "LoanApplication",
+    {
+        "id": fields.Integer,
+        "user_id": fields.Integer,
+        "amount_requested": fields.Float,
+        "purpose": fields.String,
+        "term_months": fields.Integer,
+        "repayment_frequency": fields.String,
+        "status": fields.String(example="under_review"),
+        "credit_evaluation_result": fields.Raw(description="placeholder-v1 evaluation payload"),
+        "submitted_at": fields.String,
+        "decided_at": fields.String,
+        "decided_by": fields.Integer,
+        "loan_id": fields.Integer,
+    },
+)
+loan_out = ns.model(
+    "Loan",
+    {
+        "id": fields.Integer,
+        "application_id": fields.Integer,
+        "user_id": fields.Integer,
+        "principal_amount": fields.Float,
+        "interest_rate": fields.Float,
+        "term_months": fields.Integer,
+        "installment_amount": fields.Float,
+        "total_repayable": fields.Float,
+        "status": fields.String(example="active"),
+        "disbursed_at": fields.String,
+        "repayment_schedule": fields.List(fields.Nested(schedule_item_out)),
+    },
+)
+application_list_out = ns.model(
+    "LoanApplicationList",
+    {"count": fields.Integer, "applications": fields.List(fields.Nested(application_out))},
+)
+decision_out = ns.model(
+    "LoanDecisionResult",
+    {
+        "application": fields.Nested(application_out),
+        "loan": fields.Nested(loan_out, allow_null=True, skip_none=True),
+    },
+)
+my_loans_out = ns.model(
+    "MyLoans",
+    {"count": fields.Integer, "loans": fields.List(fields.Nested(loan_out))},
+)
+
 
 # --------------------------------------------------------------------- helpers
 def _num(value):
@@ -95,12 +156,12 @@ def _current_user() -> User:
 @ns.route("/apply")
 class LoanApply(Resource):
     @ns.doc(security="Bearer")
-    @ns.expect(apply_in, validate=True)
-    @ns.response(201, "Application submitted")
-    @ns.response(409, "You already have an open application")
+    @ns.expect(apply_in)
+    @ns.response(201, "Application submitted", application_out)
+    @ns.response(409, "You already have an open application", error_out)
     @roles_required("customer")
     def post(self):
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         try:
             application = loan_processing.submit_application(
                 _current_user(),
@@ -118,7 +179,7 @@ class LoanApply(Resource):
 @ns.route("/applications")
 class LoanApplications(Resource):
     @ns.doc(security="Bearer", params={"status": "Filter by exact status (default: open applications only)"})
-    @ns.response(200, "List of applications")
+    @ns.response(200, "List of applications", application_list_out)
     @roles_required("loan_officer", "admin")
     def get(self):
         try:
@@ -132,16 +193,16 @@ class LoanApplications(Resource):
 @ns.route("/applications/<int:application_id>/decision")
 class LoanApplicationDecision(Resource):
     @ns.doc(security="Bearer")
-    @ns.expect(decision_in, validate=True)
-    @ns.response(200, "Decision recorded")
-    @ns.response(409, "Application already decided")
+    @ns.expect(decision_in)
+    @ns.response(200, "Decision recorded", decision_out)
+    @ns.response(409, "Application already decided", error_out)
     @roles_required("loan_officer", "admin")
     def post(self, application_id: int):
         application = db.session.get(LoanApplication, application_id)
         if application is None:
             abort(404, f"Application #{application_id} not found.")
 
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         decision = (data.get("decision") or "").strip().lower()
         if decision not in {"approve", "reject"}:
             abort(400, "decision must be 'approve' or 'reject'.")
@@ -167,7 +228,7 @@ class LoanApplicationDecision(Resource):
 @ns.route("/mine")
 class MyLoans(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "The authenticated customer's loans")
+    @ns.response(200, "The authenticated customer's loans", my_loans_out)
     @roles_required("customer")
     def get(self):
         from app.models import Loan

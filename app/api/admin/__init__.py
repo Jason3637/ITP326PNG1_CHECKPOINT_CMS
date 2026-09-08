@@ -20,19 +20,29 @@ parameters_in = ns.model(
     },
 )
 
+error_out = ns.model("ErrorResponse", {"message": fields.String})
+parameters_out = ns.model(
+    "SystemParameters",
+    {
+        "parameters": fields.Raw(
+            description="{param_key: {value, type, description, source (default|override), updated_at, updated_by}}"
+        )
+    },
+)
+
 
 @ns.route("/parameters")
 class Parameters(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "Current effective parameters (default or admin override)")
+    @ns.response(200, "Current effective parameters (default or admin override)", parameters_out)
     @roles_required("admin")
     def get(self):
         return {"parameters": parameters.get_effective()}
 
     @ns.doc(security="Bearer")
     @ns.expect(parameters_in, validate=False)
-    @ns.response(200, "Updated - returns the new effective parameters")
-    @ns.response(400, "Unknown parameter or invalid value")
+    @ns.response(200, "Updated - returns the new effective parameters", parameters_out)
+    @ns.response(400, "Unknown parameter or invalid value", error_out)
     @roles_required("admin")
     def put(self):
         payload = request.get_json(silent=True) or {}

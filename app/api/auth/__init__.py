@@ -59,6 +59,75 @@ login_verify_in = ns.model(
     },
 )
 
+# --------------------------------------------------------------- response models
+error_out = ns.model("ErrorResponse", {"message": fields.String})
+register_out = ns.model(
+    "RegisterResponse",
+    {
+        "message": fields.String,
+        "user_id": fields.Integer,
+        "next_step": fields.String,
+        "mfa_setup_token": fields.String(description="short-lived, scopes /mfa/setup + /mfa/verify-setup"),
+    },
+)
+mfa_setup_out = ns.model(
+    "MfaSetupResponse",
+    {
+        "message": fields.String,
+        "totp_secret": fields.String(description="base32 secret, shown once"),
+        "provisioning_uri": fields.String(description="otpauth:// URI"),
+        "qr_code_png": fields.String(description="data:image/png;base64 QR"),
+        "next_step": fields.String,
+    },
+)
+mfa_verify_setup_out = ns.model(
+    "MfaVerifySetupResponse",
+    {
+        "message": fields.String,
+        "backup_codes": fields.List(fields.String, description="one-time codes, shown once"),
+        "next_step": fields.String,
+    },
+)
+login_out = ns.model(
+    "LoginResponse",
+    {
+        "message": fields.String,
+        "mfa_required": fields.String(description="'challenge' (password OK) or 'setup' (not enrolled, HTTP 403)"),
+        "mfa_challenge_token": fields.String(description="present when mfa_required=challenge"),
+        "mfa_setup_token": fields.String(description="present when mfa_required=setup"),
+        "next_step": fields.String,
+    },
+)
+token_out = ns.model(
+    "TokenResponse",
+    {
+        "message": fields.String,
+        "access_token": fields.String,
+        "refresh_token": fields.String,
+        "token_type": fields.String(example="Bearer"),
+        "role": fields.String(example="customer"),
+    },
+)
+refresh_out = ns.model(
+    "RefreshResponse",
+    {
+        "access_token": fields.String,
+        "token_type": fields.String(example="Bearer"),
+        "role": fields.String,
+    },
+)
+me_out = ns.model(
+    "MeResponse",
+    {
+        "id": fields.Integer,
+        "email": fields.String,
+        "full_name": fields.String,
+        "role": fields.String,
+        "is_active": fields.Boolean,
+        "totp_enabled": fields.Boolean,
+    },
+)
+
 _BEARER = {"security": "Bearer"}
 
 
@@ -73,8 +142,8 @@ def _load_user(user_id: int) -> User:
 @ns.route("/register")
 class Register(Resource):
     @ns.expect(register_in, validate=True)
-    @ns.response(201, "Registered - proceed to MFA setup")
-    @ns.response(409, "Email already registered")
+    @ns.response(201, "Registered - proceed to MFA setup", register_out)
+    @ns.response(409, "Email already registered", error_out)
     def post(self):
         data = request.get_json()
         email = data["email"].strip().lower()
@@ -115,7 +184,7 @@ class Register(Resource):
 @ns.route("/mfa/setup")
 class MfaSetup(Resource):
     @ns.doc(**_BEARER)
-    @ns.response(200, "TOTP secret + QR generated")
+    @ns.response(200, "TOTP secret + QR generated", mfa_setup_out)
     @token_scope_required("mfa_setup")
     def post(self):
         user = _load_user(current_user_id())
@@ -147,8 +216,8 @@ class MfaSetup(Resource):
 @ns.route("/mfa/verify-setup")
 class MfaVerifySetup(Resource):
     @ns.doc(**_BEARER)
-    @ns.expect(setup_verify_in, validate=True)
-    @ns.response(200, "MFA enabled - backup codes returned once")
+    @ns.expect(setup_verify_in)
+    @ns.response(200, "MFA enabled - backup codes returned once", mfa_verify_setup_out)
     @token_scope_required("mfa_setup")
     def post(self):
         user = _load_user(current_user_id())
@@ -198,9 +267,9 @@ class MfaVerifySetup(Resource):
 @ns.route("/login")
 class Login(Resource):
     @ns.expect(login_in, validate=True)
-    @ns.response(200, "Password OK - TOTP code required")
-    @ns.response(401, "Invalid credentials")
-    @ns.response(403, "MFA setup required / account disabled")
+    @ns.response(200, "Password OK - TOTP code required", login_out)
+    @ns.response(401, "Invalid credentials", error_out)
+    @ns.response(403, "MFA setup required / account disabled", login_out)
     def post(self):
         data = request.get_json()
         email = data["email"].strip().lower()
@@ -257,9 +326,9 @@ class Login(Resource):
 @ns.route("/mfa/verify-login")
 class MfaVerifyLogin(Resource):
     @ns.doc(**_BEARER)
-    @ns.expect(login_verify_in, validate=True)
-    @ns.response(200, "MFA verified - access + refresh tokens issued")
-    @ns.response(401, "Invalid or expired code")
+    @ns.expect(login_verify_in)
+    @ns.response(200, "MFA verified - access + refresh tokens issued", token_out)
+    @ns.response(401, "Invalid or expired code", error_out)
     @token_scope_required("mfa_challenge")
     def post(self):
         user = _load_user(current_user_id())
@@ -324,7 +393,7 @@ class MfaVerifyLogin(Resource):
 @ns.route("/refresh")
 class Refresh(Resource):
     @ns.doc(**_BEARER)
-    @ns.response(200, "New access token issued")
+    @ns.response(200, "New access token issued", refresh_out)
     @jwt_required(refresh=True)
     def post(self):
         from flask_jwt_extended import create_access_token
@@ -349,7 +418,7 @@ class Refresh(Resource):
 @ns.route("/me")
 class Me(Resource):
     @ns.doc(**_BEARER)
-    @ns.response(200, "Current user (from verified claims)")
+    @ns.response(200, "Current user (from verified claims)", me_out)
     @roles_required()  # any authenticated access token
     def get(self):
         user = _load_user(current_user_id())

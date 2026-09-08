@@ -448,3 +448,28 @@ headers: `Authorization`, `Content-Type`. Methods: `GET, POST, PUT, PATCH,
 DELETE, OPTIONS`. **On deploy, set `CORS_ORIGINS` to the deployed frontend URL(s)**
 — e.g. `CORS_ORIGINS=https://app.primesvault.example`. Because auth is a Bearer
 JWT header (not cookies), credentialed CORS is not needed.
+
+---
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+`pytest` runs against an in-memory SQLite DB (`TestingConfig`) built with
+`db.create_all()` — no migration, no Supabase, no email. Coverage:
+
+| File | What it locks down |
+|---|---|
+| `tests/test_auth_flow.py` | full register → MFA setup → verify-setup → login → MFA verify-login → `/me`; login-before-MFA rejected; wrong password 401; backup code single-use; scoped token can't call the API |
+| `tests/test_loan_lifecycle.py` | apply → officer review → approve → repay → loan `completed`; schedule sums to `total_repayable`; duplicate/over-limit applications rejected; amortization installment counts |
+| `tests/test_rbac.py` | customer→officer endpoint = 403, officer→admin = 403, no token = 401, dashboard shape differs by role |
+| `tests/test_docs_swagger.py` | every B2–B5 endpoint present in `/api/swagger.json` with a body model, a documented 2xx response model, and Bearer security |
+
+## Deployment
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) — Railway `Procfile` (gunicorn `web` +
+`flask db upgrade` `release`), `.python-version`, and the full required-env-var
+table.

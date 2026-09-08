@@ -9,6 +9,8 @@ import os
 from datetime import timedelta
 from decimal import Decimal
 
+from sqlalchemy.pool import StaticPool
+
 
 def _bool(value: str | None, default: bool = False) -> bool:
     if value is None:
@@ -120,7 +122,18 @@ class ProductionConfig(Config):
 
 class TestingConfig(Config):
     TESTING = True
-    DEBUG = True
+    DEBUG = False
+    # Self-contained: an in-memory SQLite DB shared across connections, a fixed
+    # (throwaway) crypto key, and email disabled. Never touches Supabase.
+    SQLALCHEMY_DATABASE_URI = "sqlite://"
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "poolclass": StaticPool,
+        "connect_args": {"check_same_thread": False},
+    }
+    JWT_SECRET_KEY = "testing-only-not-a-real-secret-0123456789"
+    MFA_ENCRYPTION_KEY = "ZVa21zYrbaUc1mZIHOQNMEUBYCw63cU504ux-rk9xXU="  # test-only Fernet key
+    NOTIFICATIONS_ENABLED = False
+    CORS_ORIGINS = ["http://localhost:3000"]
 
 
 _CONFIGS = {

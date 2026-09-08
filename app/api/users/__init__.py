@@ -3,7 +3,7 @@
 from flask import request
 from werkzeug.datastructures import FileStorage
 
-from flask_restx import Namespace, Resource, abort, reqparse
+from flask_restx import Namespace, Resource, abort, fields, reqparse
 
 from app.api.auth.decorators import current_user_id, roles_required
 from app.extensions import db
@@ -22,6 +22,54 @@ upload_parser.add_argument("document_type", location="form", required=True,
                            choices=("id_verification", "receipt", "loan_file"))
 upload_parser.add_argument("loan_application_id", type=int, location="form", required=False)
 
+# --------------------------------------------------------------- response models
+error_out = ns.model("ErrorResponse", {"message": fields.String})
+profile_out = ns.model(
+    "Profile",
+    {
+        "id": fields.Integer,
+        "email": fields.String,
+        "full_name": fields.String,
+        "phone_number": fields.String,
+        "role": fields.String,
+        "is_active": fields.Boolean,
+        "totp_enabled": fields.Boolean,
+        "created_at": fields.String,
+    },
+)
+document_out = ns.model(
+    "Document",
+    {
+        "id": fields.Integer,
+        "user_id": fields.Integer,
+        "loan_application_id": fields.Integer,
+        "document_type": fields.String(example="id_verification"),
+        "storage_path": fields.String(description="Supabase Storage object path (bytes never in Postgres)"),
+        "uploaded_at": fields.String,
+    },
+)
+document_list_out = ns.model(
+    "DocumentList",
+    {"count": fields.Integer, "documents": fields.List(fields.Nested(document_out))},
+)
+member_document_list_out = ns.model(
+    "MemberDocumentList",
+    {
+        "user_id": fields.Integer,
+        "count": fields.Integer,
+        "documents": fields.List(fields.Nested(document_out)),
+    },
+)
+download_url_out = ns.model(
+    "DownloadUrl",
+    {
+        "document_id": fields.Integer,
+        "document_type": fields.String,
+        "signed_url": fields.String(description="short-lived Supabase URL"),
+        "expires_in_seconds": fields.Integer,
+    },
+)
+
 
 def _current_user() -> User:
     user = db.session.get(User, current_user_id())
@@ -33,7 +81,7 @@ def _current_user() -> User:
 @ns.route("/profile")
 class Profile(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "The authenticated member's profile")
+    @ns.response(200, "The authenticated member's profile", profile_out)
     @roles_required()
     def get(self):
         profile = members.get_profile(current_user_id())
@@ -46,9 +94,9 @@ class Profile(Resource):
 class Documents(Resource):
     @ns.doc(security="Bearer")
     @ns.expect(upload_parser)
-    @ns.response(201, "Uploaded to Supabase Storage; storage_path saved")
-    @ns.response(413, "File too large")
-    @ns.response(415, "Unsupported file type")
+    @ns.response(201, "Uploaded to Supabase Storage; storage_path saved", document_out)
+    @ns.response(413, "File too large", error_out)
+    @ns.response(415, "Unsupported file type", error_out)
     @roles_required("customer")
     def post(self):
         args = upload_parser.parse_args()
@@ -68,7 +116,7 @@ class Documents(Resource):
         return documents.serialize(document), 201
 
     @ns.doc(security="Bearer", params={"document_type": "optional filter"})
-    @ns.response(200, "The authenticated member's documents")
+    @ns.response(200, "The authenticated member's documents", document_list_out)
     @roles_required()
     def get(self):
         try:
@@ -83,9 +131,9 @@ class Documents(Resource):
 @ns.route("/documents/<int:document_id>/download")
 class DocumentDownload(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "A short-lived Supabase signed URL")
-    @ns.response(403, "Not your document")
-    @ns.response(404, "No such document")
+    @ns.response(200, "A short-lived Supabase signed URL", download_url_out)
+    @ns.response(403, "Not your document", error_out)
+    @ns.response(404, "No such document", error_out)
     @roles_required()  # owner OR staff; enforced in the service
     def get(self, document_id: int):
         try:
@@ -97,7 +145,7 @@ class DocumentDownload(Resource):
 @ns.route("/<int:user_id>/documents")
 class MemberDocuments(Resource):
     @ns.doc(security="Bearer", params={"document_type": "optional filter"})
-    @ns.response(200, "A member's documents (staff review)")
+    @ns.response(200, "A member's documents (staff review)", member_document_list_out)
     @roles_required(*_STAFF)
     def get(self, user_id: int):
         if db.session.get(User, user_id) is None:
