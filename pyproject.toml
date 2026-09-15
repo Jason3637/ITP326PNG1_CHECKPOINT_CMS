@@ -1,0 +1,20 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Alembic-generated, not hand-written - not worth linting (and autogenerate
+# will keep re-introducing e.g. trailing whitespace in its own template).
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+# Deliberately minimal: pyflakes (real bugs - unused imports/names, undefined
+# names, etc.) + a handful of pycodestyle error classes. Not a style-nitpick
+# ruleset - this is a CI safety net (see .github/workflows/ci.yml), not a
+# formatter. Widen this later if the team wants more (e.g. "I", "UP", "B").
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # line length is a hint via `line-length` above, not a hard failure
+    "E402",  # this codebase deliberately does `load_dotenv()` then imports
+             # (app/__init__.py, every script in scripts/) - real pattern, not a bug
+    "E741",  # `l` for "loan" is used throughout app/services/*.py; renaming
+             # it is a pure style churn this pass isn't about
+]
