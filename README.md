@@ -9,6 +9,7 @@ This is the CMS repo for our capstone project where we will build a computer and
 - [BACKEND.md](BACKEND.md) — API reference, architecture, auth flow, credit evaluation.
 - [DEPLOYMENT.md](DEPLOYMENT.md) — Railway deployment, environment variables.
 - [STAFF_ONBOARDING.md](STAFF_ONBOARDING.md) — creating `loan_officer`/`admin` accounts.
+- [UAT_TEST_SCRIPT.md](UAT_TEST_SCRIPT.md) — customer + staff test script for client UAT ([formatted version](https://claude.ai/artifact/WTTLn2Hy3uyhArqqtNEnKF)).
 - [HANDOFF.md](HANDOFF.md) — dated project status snapshot.
 
 ## Credit evaluation status
