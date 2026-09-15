@@ -5,7 +5,7 @@ from sqlalchemy import func
 from app.extensions import db
 
 from .base import JSONType, pg_enum
-from .enums import LoanApplicationStatus, RepaymentFrequency
+from .enums import EmploymentStatus, LoanApplicationStatus, RepaymentFrequency
 
 
 class LoanApplication(db.Model):
@@ -34,7 +34,21 @@ class LoanApplication(db.Model):
         server_default=LoanApplicationStatus.PENDING.value,
         index=True,
     )
-    # Populated by the credit-evaluation engine in Phase B3 (score, flags, reasons).
+    # ------------------------------------------------- credit-evaluation inputs
+    # Self-reported by the applicant at submission time (see the apply form).
+    # All nullable: an application can be submitted without them, but
+    # credit_evaluation.evaluate() treats missing income as disqualifying (it
+    # cannot assess affordability without it) - see that module's docstring.
+    monthly_income = db.Column(db.Numeric(12, 2), nullable=True)
+    employment_status = db.Column(
+        pg_enum(EmploymentStatus, "employment_status"), nullable=True
+    )
+    # Other recurring monthly debt (rent-to-own, other loans, etc.), for the
+    # debt-to-income check. Defaults to 0 (assumed no other debt) when omitted.
+    existing_monthly_debt = db.Column(db.Numeric(12, 2), nullable=True)
+
+    # Populated by the credit-evaluation engine (score, flags, reasons). See
+    # app/services/credit_evaluation.py for exactly what "algorithm" means.
     credit_evaluation_result = db.Column(JSONType)
 
     submitted_at = db.Column(

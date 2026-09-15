@@ -61,3 +61,33 @@ def amortize(
         "total_repayable": total_repayable,
         "total_interest": total_interest,
     }
+
+
+def principal_for_installment(
+    installment_amount,
+    annual_rate,
+    term_months: int,
+    frequency: RepaymentFrequency = RepaymentFrequency.MONTHLY,
+) -> Decimal:
+    """Inverse of ``amortize()``: the principal whose level installment equals
+    ``installment_amount`` at the given rate/term/frequency.
+
+    Used by credit_evaluation.py to turn an affordability ceiling (how big an
+    installment the applicant can carry) back into a loan-amount ceiling.
+    """
+    installment = Decimal(str(installment_amount))
+    if installment <= 0:
+        return Decimal("0.00")
+
+    annual = Decimal(str(annual_rate))
+    n = installment_count(term_months, frequency)
+    per_year = PERIODS_PER_YEAR[frequency]
+    r = annual / Decimal(per_year)
+
+    if r == 0:
+        principal = installment * Decimal(n)
+    else:
+        factor = Decimal(1) - (Decimal(1) + r) ** (-n)
+        principal = installment * factor / r
+
+    return principal.quantize(_CENTS, rounding=ROUND_HALF_UP)

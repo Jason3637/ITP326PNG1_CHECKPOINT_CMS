@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from app.extensions import db
 from app.models import Loan, LoanApplication
 from app.models.enums import (
+    EmploymentStatus,
     LoanApplicationStatus,
     LoanStatus,
     RepaymentFrequency,
@@ -43,6 +44,9 @@ def submit_application(
     purpose: str | None,
     term_months: int,
     repayment_frequency: str,
+    monthly_income=None,
+    employment_status: str | None = None,
+    existing_monthly_debt=None,
 ) -> LoanApplication:
     min_amount = parameters.get_value("min_loan_amount")
     max_amount = parameters.get_value("max_loan_amount")
@@ -73,6 +77,35 @@ def submit_application(
         allowed = ", ".join(f.value for f in RepaymentFrequency)
         raise LoanProcessingError(f"repayment_frequency must be one of: {allowed}.")
 
+    # ---- credit-evaluation inputs (all optional at the DB level, but see
+    # credit_evaluation.py: omitting monthly_income makes the application
+    # ineligible regardless of score) ----
+    income_val = None
+    if monthly_income is not None:
+        try:
+            income_val = Decimal(str(monthly_income))
+        except (InvalidOperation, TypeError):
+            raise LoanProcessingError("monthly_income must be a number.")
+        if income_val < 0:
+            raise LoanProcessingError("monthly_income must not be negative.")
+
+    debt_val = None
+    if existing_monthly_debt is not None:
+        try:
+            debt_val = Decimal(str(existing_monthly_debt))
+        except (InvalidOperation, TypeError):
+            raise LoanProcessingError("existing_monthly_debt must be a number.")
+        if debt_val < 0:
+            raise LoanProcessingError("existing_monthly_debt must not be negative.")
+
+    employment_val = None
+    if employment_status is not None:
+        try:
+            employment_val = EmploymentStatus(employment_status)
+        except ValueError:
+            allowed = ", ".join(e.value for e in EmploymentStatus)
+            raise LoanProcessingError(f"employment_status must be one of: {allowed}.")
+
     existing = (
         LoanApplication.query.filter_by(user_id=user.id)
         .filter(LoanApplication.status.in_(_OPEN_APPLICATION_STATUSES))
@@ -90,6 +123,9 @@ def submit_application(
         term_months=term_months,
         repayment_frequency=frequency,
         status=LoanApplicationStatus.PENDING,
+        monthly_income=income_val,
+        employment_status=employment_val,
+        existing_monthly_debt=debt_val,
     )
     db.session.add(application)
     db.session.flush()
@@ -110,6 +146,7 @@ def submit_application(
             "repayment_frequency": frequency.value,
             "credit_score": evaluation["score"],
             "credit_eligible": evaluation["eligible"],
+            "credit_insufficient_data": evaluation.get("insufficient_data"),
             "resulting_status": application.status.value,
         },
         commit=False,

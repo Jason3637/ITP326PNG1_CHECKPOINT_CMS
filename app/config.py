@@ -83,6 +83,11 @@ class Config:
     MAX_LOAN_AMOUNT = _decimal("MAX_LOAN_AMOUNT", "50000")
     MAX_LOAN_TERM_MONTHS = int(os.environ.get("MAX_LOAN_TERM_MONTHS", "60"))
     MIN_LOAN_TERM_MONTHS = int(os.environ.get("MIN_LOAN_TERM_MONTHS", "1"))
+    # --- Credit evaluation (interim model - see app/services/credit_evaluation.py) ---
+    # Provisional guesses, NOT confirmed by the client. Tune via
+    # PUT /api/admin/parameters once real underwriting figures are provided.
+    MIN_MONTHLY_INCOME = _decimal("MIN_MONTHLY_INCOME", "200")  # PGK
+    MAX_DEBT_TO_INCOME_RATIO = _decimal("MAX_DEBT_TO_INCOME_RATIO", "0.40")  # 40%
     # Days before an installment's due date to send the "repayment due soon" email.
     REPAYMENT_REMINDER_LEAD_DAYS = int(os.environ.get("REPAYMENT_REMINDER_LEAD_DAYS", "3"))
     # ISO currency code, for the frontend to format amounts (Prime's Vault is in PNG).
