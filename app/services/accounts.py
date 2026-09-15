@@ -3,7 +3,7 @@
 from datetime import date
 from decimal import Decimal
 
-from app.models import Loan, RepaymentSchedule
+from app.models import Loan
 from app.models.enums import LoanStatus, RepaymentStatus
 
 _CENTS = Decimal("0.01")
@@ -14,6 +14,10 @@ def _loan_progress(loan: Loan) -> dict:
     total_due = sum((Decimal(r.amount_due) for r in rows), Decimal("0"))
     total_paid = sum((Decimal(r.amount_paid) for r in rows), Decimal("0"))
     paid_count = sum(1 for r in rows if r.status == RepaymentStatus.PAID)
+    # Reads the STORED status - kept current by the daily
+    # repayments_scheduler.flip_overdue_installments() job (see
+    # scripts/send_due_reminders.py). reporting.py's portfolio view instead
+    # computes overdue-ness on read; either is a safety net for the other.
     overdue_count = sum(1 for r in rows if r.status == RepaymentStatus.OVERDUE)
 
     upcoming = sorted(

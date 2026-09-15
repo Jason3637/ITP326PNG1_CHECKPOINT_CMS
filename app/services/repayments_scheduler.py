@@ -1,12 +1,17 @@
-"""Repayments Scheduler - build the full RepaymentSchedule for a loan."""
+"""Repayments Scheduler - build the full RepaymentSchedule for a loan, and the
+two daily maintenance jobs that keep it current (see scripts/send_due_reminders.py).
+"""
 
 from datetime import date, timedelta
 from decimal import Decimal
 
+from flask import current_app
+
 from app.extensions import db
 from app.models import RepaymentSchedule
-from app.models.enums import RepaymentFrequency, RepaymentStatus
+from app.models.enums import LoanStatus, RepaymentFrequency, RepaymentStatus
 
+from . import audit, notifications
 from .interest_calculation import installment_count
 
 _CENTS = Decimal("0.01")
@@ -77,3 +82,103 @@ def generate_schedule(
     if flush:
         db.session.flush()
     return rows
+
+
+# =========================================================== daily maintenance
+# The two jobs below are meant to run on a schedule (see
+# scripts/send_due_reminders.py and DEPLOYMENT.md's "Scheduled job" section) -
+# nothing here depends on being called from a request, so both are safe to
+# call from a CLI script under a bare app context.
+
+
+def flip_overdue_installments() -> list[RepaymentSchedule]:
+    """Proactively transition schedule rows into ``overdue`` once their due
+    date has passed with no full payment, and audit every transition.
+
+    This is the PROACTIVE counterpart to the on-read overdue check in
+    ``reporting.py``'s ``_is_overdue()`` / ``accounts.py``'s
+    ``installments_overdue`` count. Deliberately does not replace that
+    on-read check: if this job is delayed or skipped for a day, the read path
+    still reports the correct (computed) overdue state - it just isn't
+    reflected in the *stored* `status` column, and hence in `accounts.py`'s
+    ``installments_overdue`` / ``has_overdue`` (which read the stored value),
+    until this job next runs. Idempotent - only currently-`upcoming` rows are
+    touched, so re-running it is always safe.
+    """
+    today = date.today()
+    rows = (
+        RepaymentSchedule.query.filter(
+            RepaymentSchedule.status == RepaymentStatus.UPCOMING,
+            RepaymentSchedule.due_date < today,
+        ).all()
+    )
+
+    for row in rows:
+        row.status = RepaymentStatus.OVERDUE
+        audit.record(
+            "repayment_marked_overdue",
+            actor_id=None,  # system job, not a user action
+            entity_type="RepaymentSchedule",
+            entity_id=row.id,
+            details={
+                "loan_id": row.loan_id,
+                "installment_number": row.installment_number,
+                "due_date": row.due_date.isoformat(),
+                "amount_due": float(Decimal(row.amount_due)),
+                "amount_paid": float(Decimal(row.amount_paid)),
+            },
+            commit=False,
+        )
+
+    if rows:
+        db.session.commit()
+    return rows
+
+
+def send_due_soon_reminders() -> list[dict]:
+    """Email each borrower with an installment due within
+    ``REPAYMENT_REMINDER_LEAD_DAYS`` days, and audit every attempt (sent or
+    not - e.g. notifications disabled/SMTP unconfigured still gets a row, so
+    the ledger reflects what was *attempted*, not just what succeeded).
+
+    Returns one ``{"row": RepaymentSchedule, "outcome": {...}}`` dict per
+    matched installment, in the shape ``notifications.notify_repayment_due_soon``
+    returns, for the caller (the script) to report on.
+    """
+    lead = current_app.config["REPAYMENT_REMINDER_LEAD_DAYS"]
+    today = date.today()
+    window_end = today + timedelta(days=lead)
+
+    rows = (
+        RepaymentSchedule.query.join(RepaymentSchedule.loan)
+        .filter(
+            RepaymentSchedule.status != RepaymentStatus.PAID,
+            RepaymentSchedule.due_date >= today,
+            RepaymentSchedule.due_date <= window_end,
+        )
+        .all()
+    )
+    rows = [r for r in rows if r.loan.status == LoanStatus.ACTIVE]
+
+    results = []
+    for row in rows:
+        outcome = notifications.notify_repayment_due_soon(row)
+        audit.record(
+            "repayment_reminder_sent" if outcome.get("sent") else "repayment_reminder_not_sent",
+            actor_id=None,
+            entity_type="RepaymentSchedule",
+            entity_id=row.id,
+            details={
+                "loan_id": row.loan_id,
+                "installment_number": row.installment_number,
+                "due_date": row.due_date.isoformat(),
+                "sent": outcome.get("sent"),
+                "reason": outcome.get("reason"),
+            },
+            commit=False,
+        )
+        results.append({"row": row, "outcome": outcome})
+
+    if rows:
+        db.session.commit()
+    return results
