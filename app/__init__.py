@@ -16,7 +16,7 @@ from flask_cors import CORS
 load_dotenv()  # no-op in production where real env vars are set
 
 from .config import get_config
-from .extensions import db, jwt, migrate
+from .extensions import db, jwt, limiter, migrate
 
 
 def create_app(config_name: str | None = None) -> Flask:
@@ -39,6 +39,7 @@ def _init_extensions(app: Flask) -> None:
 
     migrate.init_app(app, db)
     jwt.init_app(app)
+    limiter.init_app(app)
 
     # The Next.js frontend is a separate origin. Allow it to call the API and
     # /health, and to send the Authorization (JWT) + Content-Type headers.

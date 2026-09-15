@@ -48,6 +48,7 @@ api.add_namespace(admin_ns)
 # Make JWT failures (missing/expired/invalid token, wrong scope) render as clean
 # JSON 401s through Flask-RESTX instead of bubbling up as 500s.
 from flask_jwt_extended.exceptions import JWTExtendedException  # noqa: E402
+from flask_limiter.errors import RateLimitExceeded  # noqa: E402
 from jwt.exceptions import PyJWTError  # noqa: E402
 
 
@@ -59,3 +60,12 @@ def _handle_jwt_extended(error):
 @api.errorhandler(PyJWTError)
 def _handle_pyjwt(error):
     return {"message": f"Invalid token: {error}"}, 401
+
+
+# Rate-limit responses must be generic - the same message regardless of what
+# was being attempted or against which email/account, so a 429 itself can
+# never be used to infer whether an email is registered. No detail from
+# `error` (which limit, which key) is included in the response body.
+@api.errorhandler(RateLimitExceeded)
+def _handle_rate_limit(error):
+    return {"message": "Too many attempts. Please wait a minute and try again."}, 429
