@@ -28,6 +28,16 @@ _SPEC: dict[str, tuple[str, str, str]] = {
     "max_loan_amount": ("MAX_LOAN_AMOUNT", "money", "Maximum loan amount."),
     "min_loan_term_months": ("MIN_LOAN_TERM_MONTHS", "int", "Minimum loan term in months."),
     "max_loan_term_months": ("MAX_LOAN_TERM_MONTHS", "int", "Maximum loan term in months."),
+    "min_monthly_income": (
+        "MIN_MONTHLY_INCOME",
+        "money",
+        "Minimum self-reported monthly income to qualify (credit evaluation, interim model).",
+    ),
+    "max_debt_to_income_ratio": (
+        "MAX_DEBT_TO_INCOME_RATIO",
+        "rate",
+        "Max (existing debt + new installment) / income, as a fraction (credit evaluation, interim model).",
+    ),
 }
 
 PARAMETER_KEYS = tuple(_SPEC)

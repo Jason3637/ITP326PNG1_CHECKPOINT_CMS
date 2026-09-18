@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: UAT test script
+    url: https://github.com/Jason3637/ITP326PNG1_CHECKPOINT_CMS/blob/main/UAT_TEST_SCRIPT.md
+    about: Check the "Known differences" section before filing - it may already explain what you saw.

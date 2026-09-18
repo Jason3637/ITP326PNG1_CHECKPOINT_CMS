@@ -1,0 +1,77 @@
+name: "UAT: Defect / bug"
+description: Something behaved incorrectly during User Acceptance Testing - not one of the two known-different areas (credit check, manual payments).
+title: "[UAT] "
+labels: ["uat", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing here, check the **UAT test script**'s "Known differences" section.
+        If what you saw is about **credit-check scoring/eligibility** or **staff manually
+        recording a payment** (no BSP gateway yet), use the **"UAT: Expected difference
+        feedback"** template instead - those are tracked separately from bugs on purpose.
+
+  - type: input
+    id: journey-step
+    attributes:
+      label: Which UAT script step?
+      description: e.g. "Customer journey, step 4 - Apply for a loan"
+      placeholder: "Customer journey, step _ / Staff journey, step _"
+    validations:
+      required: true
+
+  - type: input
+    id: account
+    attributes:
+      label: Account/role used
+      description: Role only, not real credentials (e.g. "customer", "loan_officer", "admin")
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: What the test script said should happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: What actually happened - include the exact error message/status code shown, if any
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact clicks/inputs, in order
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Blocker (can't continue testing)
+        - Major (a core journey step fails)
+        - Minor (works, but wrong/confusing)
+        - Cosmetic (visual only)
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshot / screen recording
+      description: Drag and drop an image or video here.
+
+  - type: input
+    id: environment
+    attributes:
+      label: Where you tested
+      placeholder: "Vercel production / Railway production, browser + OS"

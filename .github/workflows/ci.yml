@@ -1,0 +1,45 @@
+name: CI
+
+# Regression safety net for the backend: install deps, lint, run the full
+# pytest suite. Deliberately NOT a deploy pipeline - Railway deploys off its
+# own GitHub integration (see DEPLOYMENT.md), independent of this workflow.
+on:
+  push:
+    branches: [Develop, main]
+  pull_request:
+    branches: [Develop, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      # No env vars/secrets needed: pytest runs entirely against
+      # TestingConfig (in-memory SQLite, hardcoded test-only JWT/MFA keys,
+      # notifications disabled) - see tests/conftest.py and BACKEND.md's
+      # Tests section. It never touches Supabase, Railway, or real secrets.
+      #
+      # `python -m pytest`, not bare `pytest`: tests/ has no __init__.py, so
+      # pytest's default import mode inserts tests/ itself onto sys.path
+      # rather than the repo root, and `from app import create_app` in
+      # conftest.py fails with ModuleNotFoundError. `python -m` always puts
+      # the cwd on sys.path first, sidestepping that. Confirmed locally -
+      # bare `pytest` fails this exact way, `python -m pytest` passes all
+      # 72 tests.
+      - name: Test (pytest)
+        run: python -m pytest

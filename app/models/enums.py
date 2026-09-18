@@ -19,6 +19,21 @@ class RepaymentFrequency(enum.StrEnum):
     MONTHLY = "monthly"
 
 
+class EmploymentStatus(enum.StrEnum):
+    """Applicant-declared employment status, captured at loan application time.
+
+    Self-reported, not independently verified (no payslip/employer-check
+    integration yet — see credit_evaluation.py's module docstring). Used only
+    as a credit-evaluation signal.
+    """
+
+    EMPLOYED = "employed"
+    SELF_EMPLOYED = "self_employed"
+    UNEMPLOYED = "unemployed"
+    RETIRED = "retired"
+    STUDENT = "student"
+
+
 class LoanApplicationStatus(enum.StrEnum):
     PENDING = "pending"
     UNDER_REVIEW = "under_review"

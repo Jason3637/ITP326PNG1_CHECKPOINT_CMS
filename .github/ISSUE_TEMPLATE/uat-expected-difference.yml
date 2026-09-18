@@ -1,0 +1,46 @@
+name: "UAT: Expected-difference feedback"
+description: Feedback specifically on the credit-check logic or manual/staff-entered payments - both flagged in the UAT script as deliberately not-final-yet. Not a bug report.
+title: "[UAT-Known] "
+labels: ["uat", "expected-difference"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for reactions/feedback on the **two areas we already told you
+        are placeholder/interim**, not for anything that looks like it just broke. That
+        keeps this feedback separate from real defects so it doesn't get lost or, worse,
+        get "fixed" by accident before the real version is scoped.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which known-different area is this about?
+      options:
+        - Credit-check / loan eligibility scoring (interim model, not final lending policy)
+        - Manual/staff-entered payments (no BSP gateway integration yet)
+    validations:
+      required: true
+
+  - type: input
+    id: journey-step
+    attributes:
+      label: Which UAT script step?
+      placeholder: "Customer journey, step _ / Staff journey, step _"
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: What you saw
+      description: e.g. "The application went to 'pending' instead of an eligibility decision" or "I expected to enter a card number, not have staff type in a cash amount"
+    validations:
+      required: true
+
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Your feedback for when the real version is built
+      description: What should the finished credit-check criteria or payment flow actually do? (This is exactly the input we need for that later phase.)
+    validations:
+      required: true

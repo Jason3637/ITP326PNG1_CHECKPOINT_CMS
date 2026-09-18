@@ -23,6 +23,25 @@ apply_in = ns.model(
         "repayment_frequency": fields.String(
             required=True, enum=["weekly", "biweekly", "monthly"], example="monthly"
         ),
+        "monthly_income": fields.Float(
+            required=False,
+            example=800,
+            description=(
+                "Self-reported gross monthly income (interim credit-evaluation "
+                "input - see BACKEND.md). Omitting this makes the application "
+                "ineligible regardless of score, since affordability can't be assessed."
+            ),
+        ),
+        "employment_status": fields.String(
+            required=False,
+            enum=["employed", "self_employed", "unemployed", "retired", "student"],
+            example="employed",
+        ),
+        "existing_monthly_debt": fields.Float(
+            required=False,
+            example=0,
+            description="Other recurring monthly debt obligations, if any. Defaults to 0 if omitted.",
+        ),
     },
 )
 decision_in = ns.model(
@@ -57,8 +76,14 @@ application_out = ns.model(
         "purpose": fields.String,
         "term_months": fields.Integer,
         "repayment_frequency": fields.String,
+        "monthly_income": fields.Float,
+        "employment_status": fields.String,
+        "existing_monthly_debt": fields.Float,
         "status": fields.String(example="under_review"),
-        "credit_evaluation_result": fields.Raw(description="placeholder-v1 evaluation payload"),
+        "credit_evaluation_result": fields.Raw(
+            description="Credit-evaluation payload - see app/services/credit_evaluation.py "
+            "for the current algorithm (`algorithm` field identifies which one produced it)."
+        ),
         "submitted_at": fields.String,
         "decided_at": fields.String,
         "decided_by": fields.Integer,
@@ -111,6 +136,9 @@ def serialize_application(a: LoanApplication) -> dict:
         "purpose": a.purpose,
         "term_months": a.term_months,
         "repayment_frequency": str(a.repayment_frequency),
+        "monthly_income": _num(a.monthly_income),
+        "employment_status": str(a.employment_status) if a.employment_status else None,
+        "existing_monthly_debt": _num(a.existing_monthly_debt),
         "status": str(a.status),
         "credit_evaluation_result": a.credit_evaluation_result,
         "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,
@@ -169,6 +197,9 @@ class LoanApply(Resource):
                 purpose=data.get("purpose"),
                 term_months=data.get("term_months"),
                 repayment_frequency=data.get("repayment_frequency"),
+                monthly_income=data.get("monthly_income"),
+                employment_status=data.get("employment_status"),
+                existing_monthly_debt=data.get("existing_monthly_debt"),
             )
         except LoanProcessingError as exc:
             abort(exc.status_code, exc.message)

@@ -13,6 +13,7 @@ from sqlalchemy.engine import Engine
 
 from app import create_app
 from app.extensions import db as _db
+from app.extensions import limiter as _limiter
 
 
 @event.listens_for(Engine, "connect")
@@ -31,6 +32,12 @@ def app():
     application = create_app("testing")
     with application.app_context():
         _db.create_all()
+        # The rate limiter's storage is a module-level singleton (see
+        # app/extensions.py) shared across every create_app() call in this
+        # process, unlike `_db` which gets a fresh schema per test - without
+        # this, request counts would accumulate across unrelated tests and
+        # start 429-ing them. Reset so every test starts at zero.
+        _limiter.reset()
         try:
             yield application
         finally:

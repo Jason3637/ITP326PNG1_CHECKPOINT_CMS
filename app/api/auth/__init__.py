@@ -12,7 +12,7 @@ from flask import current_app, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from flask_restx import Namespace, Resource, abort, fields
 
-from app.extensions import db
+from app.extensions import db, limiter
 from app.models import MfaBackupCode, User
 from app.models.enums import UserRole
 from app.services import audit, mfa, security
@@ -141,9 +141,11 @@ def _load_user(user_id: int) -> User:
 # ------------------------------------------------------------------- 1. register
 @ns.route("/register")
 class Register(Resource):
+    @limiter.limit("10 per minute")
     @ns.expect(register_in, validate=True)
     @ns.response(201, "Registered - proceed to MFA setup", register_out)
     @ns.response(409, "Email already registered", error_out)
+    @ns.response(429, "Too many attempts", error_out)
     def post(self):
         data = request.get_json()
         email = data["email"].strip().lower()
@@ -183,8 +185,10 @@ class Register(Resource):
 # ---------------------------------------------------------------- 2. mfa/setup
 @ns.route("/mfa/setup")
 class MfaSetup(Resource):
+    @limiter.limit("10 per minute")
     @ns.doc(**_BEARER)
     @ns.response(200, "TOTP secret + QR generated", mfa_setup_out)
+    @ns.response(429, "Too many attempts", error_out)
     @token_scope_required("mfa_setup")
     def post(self):
         user = _load_user(current_user_id())
@@ -215,9 +219,13 @@ class MfaSetup(Resource):
 # --------------------------------------------------------- 3. mfa/verify-setup
 @ns.route("/mfa/verify-setup")
 class MfaVerifySetup(Resource):
+    # Not in the original hardening-review list, but the same TOTP-code-guessing
+    # risk as /mfa/verify-login (a 6-digit code, held to the same rate).
+    @limiter.limit("5 per minute")
     @ns.doc(**_BEARER)
     @ns.expect(setup_verify_in)
     @ns.response(200, "MFA enabled - backup codes returned once", mfa_verify_setup_out)
+    @ns.response(429, "Too many attempts", error_out)
     @token_scope_required("mfa_setup")
     def post(self):
         user = _load_user(current_user_id())
@@ -266,10 +274,12 @@ class MfaVerifySetup(Resource):
 # ------------------------------------------------------------------- 4. login
 @ns.route("/login")
 class Login(Resource):
+    @limiter.limit("5 per minute")
     @ns.expect(login_in, validate=True)
     @ns.response(200, "Password OK - TOTP code required", login_out)
     @ns.response(401, "Invalid credentials", error_out)
     @ns.response(403, "MFA setup required / account disabled", login_out)
+    @ns.response(429, "Too many attempts", error_out)
     def post(self):
         data = request.get_json()
         email = data["email"].strip().lower()
@@ -325,10 +335,12 @@ class Login(Resource):
 # -------------------------------------------------------- 5. mfa/verify-login
 @ns.route("/mfa/verify-login")
 class MfaVerifyLogin(Resource):
+    @limiter.limit("5 per minute")
     @ns.doc(**_BEARER)
     @ns.expect(login_verify_in)
     @ns.response(200, "MFA verified - access + refresh tokens issued", token_out)
     @ns.response(401, "Invalid or expired code", error_out)
+    @ns.response(429, "Too many attempts", error_out)
     @token_scope_required("mfa_challenge")
     def post(self):
         user = _load_user(current_user_id())

@@ -135,6 +135,36 @@ Token types (all JWT, distinguished by a `scope` claim):
 Every step above writes a row to `audit_logs` (actor, action, IP, timestamp,
 details) — successful and failed attempts alike.
 
+### Rate limiting
+
+The five endpoints above that take a credential/code guess are throttled with
+Flask-Limiter (`app/extensions.py`), per client IP, per minute:
+
+| Endpoint | Limit | Why |
+|---|---|---|
+| `/register` | 10/min | spam-signup abuse |
+| `/mfa/setup` | 10/min | repeated secret regeneration abuse |
+| `/mfa/verify-setup` | 5/min | 6-digit TOTP guessing during enrollment |
+| `/login` | 5/min | password brute-force |
+| `/mfa/verify-login` | 5/min | 6-digit TOTP / backup-code guessing |
+
+Exceeding a limit returns `429` with the same `{"message": ...}` shape as
+every other error (`app/api/__init__.py`'s `RateLimitExceeded` handler) - a
+fixed, generic message ("Too many attempts...") with **no** endpoint- or
+account-specific detail, so the 429 itself can never be used to infer whether
+an email is registered (confirmed in `tests/test_rate_limiting.py`, including
+a byte-for-byte comparison of the 429 body for a real vs. a nonexistent
+email).
+
+The rate-limit key is the same "real client IP behind Railway's proxy" logic
+`app.services.audit.client_ip()` already uses (a single `X-Forwarded-For`
+hop) — reused deliberately so there's one source of truth for "what is the
+client's IP," not two. Storage is in-memory (`memory://`): fine for a single
+process, but with `WEB_CONCURRENCY` > 1 each gunicorn worker keeps its own
+counters, so the *effective* limit is roughly `limit × worker count` rather
+than exact. Move to Redis (`storage_uri="redis://..."`) if that stops being
+precise enough.
+
 ### Example: full flow with curl
 
 Set a base URL and register:
@@ -237,7 +267,7 @@ orchestrated by `loan_processing.py` and exposed through the namespaces.
 |---|---|---|
 | Members Registry | `services/members.py` | `get_profile()` |
 | Loan Processing | `services/loan_processing.py` | `submit_application()`, `list_applications()`, `decide_application()` |
-| Credit Evaluation | `services/credit_evaluation.py` | `evaluate()` — **placeholder algorithm** |
+| Credit Evaluation | `services/credit_evaluation.py` | `evaluate()` — **interim model, thresholds still provisional** (see below) |
 | Interest Calculation | `services/interest_calculation.py` | `amortize()`, `installment_count()` |
 | Repayments Scheduler | `services/repayments_scheduler.py` | `generate_schedule()` |
 | Account tracking | `services/accounts.py` | `get_account_summary()` |
@@ -286,15 +316,56 @@ Periods per year: monthly 12, biweekly 26, weekly 52; `n = round(term_months ·
 periods_per_year / 12)`. The final installment absorbs the rounding remainder so
 `Σ amount_due == total_repayable` exactly.
 
-### Credit Evaluation is a PLACEHOLDER
+### Credit Evaluation — interim model, still NOT the client's final policy
 
-`credit_evaluation.evaluate()` uses a transparent heuristic (requested amount vs.
-configured max, term length, prior-loan repayment history, account standing) to
-produce `{score 0-100, eligible, reasons[], recommendation}`, stored on
-`loan_applications.credit_evaluation_result` with `"algorithm": "placeholder-v1"`.
-**Replace `_score()` with the client's real lending criteria** (income
-verification, affordability ratios, guarantor rules) when available. It never
-auto-approves — a loan officer always makes the final decision.
+`credit_evaluation.evaluate()` produces `{score 0-100, eligible,
+insufficient_data, max_eligible_amount, reasons[], recommendation,
+criteria_checked[]}`, stored on `loan_applications.credit_evaluation_result`
+with `"algorithm": "interim-v2"`. It is a materially more complete rule set
+than the original placeholder (`"algorithm": "placeholder-v1"`, kept on old
+rows so historical evaluations stay identifiable) — but the exact thresholds
+are still engineering guesses, not criteria the client has signed off on.
+**What's actually live right now** (see `_score()` for the exact math):
+
+1. Requested amount vs. the configured min/max loan amount.
+2. Term length (>36 months penalized, >24 months a smaller penalty).
+3. Repayment history — both a coarse signal (any defaulted/active prior loan)
+   and a finer on-time-payment ratio computed from each installment's
+   `due_date` vs. the settling payment's `paid_at`.
+4. Account standing (`User.is_active`).
+5. **Minimum income** — self-reported `LoanApplication.monthly_income`,
+   checked against the `min_monthly_income` parameter. Missing income is a
+   **hard disqualifier** (`insufficient_data: true` in the result) —
+   independent of the numeric score, since affordability can't be assessed
+   without it.
+6. **Employment status** — self-reported `LoanApplication.employment_status`
+   (`employed | self_employed | unemployed | retired | student`);
+   `unemployed`/`student` score lower, a missing value scores lower still but
+   is *not* a hard gate the way missing income is.
+7. **Debt-to-income ratio** — `(existing_monthly_debt + estimated new
+   installment) / monthly_income` against the `max_debt_to_income_ratio`
+   parameter (the new installment is estimated at the default rate, since the
+   real rate isn't set until an officer approves).
+8. **Membership tenure** — `User.created_at` age; accounts under 30 days old
+   score slightly lower, accounts over a year old get a small bonus.
+
+None of 5-7 are independently verified (no payslip upload, no employer
+contact, no credit bureau integration) — entirely self-reported at
+application time by the applicant. `max_eligible_amount` is capped by
+affordability (the largest principal whose installment still respects the DTI
+ceiling) whenever income is known, not just the naive score-linear cap. It
+never auto-approves — a loan officer always makes the final decision.
+
+**Frontend note:** `POST /api/loans/apply` gained three optional request
+fields feeding this — `monthly_income`, `employment_status`,
+`existing_monthly_debt` (see `LoanApplyInput` in Swagger) — and returns them
+back on the application object. The apply form needs matching inputs;
+omitting `monthly_income` is valid but means the application can never be
+marked eligible.
+
+**Tuning:** `min_monthly_income` and `max_debt_to_income_ratio` are
+admin-editable via `PUT /api/admin/parameters` (see above) — update them the
+moment the client provides real figures, no redeploy needed.
 
 ---
 
@@ -431,6 +502,8 @@ Phase B3:
 | `default_annual_interest_rate` | rate (0–1) | 0.18 |
 | `min_loan_amount` / `max_loan_amount` | money | 100 / 50000 |
 | `min_loan_term_months` / `max_loan_term_months` | int | 1 / 60 |
+| `min_monthly_income` | money | 200 (credit evaluation, interim model — see below) |
+| `max_debt_to_income_ratio` | rate (0–1) | 0.40 (credit evaluation, interim model — see below) |
 
 Stored in the `system_parameters` table (one row per override). Config values are
 the **seed defaults**; a stored row overrides at runtime with no redeploy.
@@ -455,8 +528,15 @@ JWT header (not cookies), credentialed CORS is not needed.
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+python -m pytest
 ```
+
+(`python -m pytest`, not bare `pytest` — `tests/` has no `__init__.py`, so a
+bare `pytest` inserts `tests/` itself onto `sys.path` instead of the repo
+root and `conftest.py`'s `from app import create_app` fails with
+`ModuleNotFoundError`. `python -m` always puts the cwd on `sys.path` first,
+which sidesteps that. Same reason `.github/workflows/ci.yml` uses `python -m
+pytest`.)
 
 `pytest` runs against an in-memory SQLite DB (`TestingConfig`) built with
 `db.create_all()` — no migration, no Supabase, no email. Coverage:
@@ -465,7 +545,10 @@ pytest
 |---|---|
 | `tests/test_auth_flow.py` | full register → MFA setup → verify-setup → login → MFA verify-login → `/me`; login-before-MFA rejected; wrong password 401; backup code single-use; scoped token can't call the API |
 | `tests/test_loan_lifecycle.py` | apply → officer review → approve → repay → loan `completed`; schedule sums to `total_repayable`; duplicate/over-limit applications rejected; amortization installment counts |
+| `tests/test_credit_evaluation.py` | interim credit model: missing/boundary income, employment status, debt-to-income zones, membership tenure, on-time vs. overdue repayment history, affordability-capped `max_eligible_amount`, graceful degradation with no matching application |
 | `tests/test_rbac.py` | customer→officer endpoint = 403, officer→admin = 403, no token = 401, dashboard shape differs by role |
+| `tests/test_rate_limiting.py` | login/mfa endpoints actually throttle (not just decorated); 429 body is generic and identical for a real vs. nonexistent email; per-IP scoping; well-behaved use is unaffected |
+| `tests/test_scheduled_jobs.py` | daily maintenance jobs: backdated installments flip to `overdue` (single row and multi-row/multi-loan batches) and are audited; idempotent re-runs; due-soon reminders match/exclude correctly by window/loan-status/paid-state; the on-read overdue safety net still works standalone |
 | `tests/test_docs_swagger.py` | every B2–B5 endpoint present in `/api/swagger.json` with a body model, a documented 2xx response model, and Bearer security |
 
 ## Deployment

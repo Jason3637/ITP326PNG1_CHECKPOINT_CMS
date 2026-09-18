@@ -70,20 +70,89 @@ optional with sensible defaults (see `.env.example`).
 5. Point the frontend's API base URL at the Railway domain and set
    `CORS_ORIGINS` to the frontend's domain.
 
+## Staff accounts (loan_officer / admin)
+
+Public registration is customer-only by design — there is no HTTP endpoint
+that creates a `loan_officer` or `admin` account. See
+[STAFF_ONBOARDING.md](STAFF_ONBOARDING.md) for the seeding script
+(`scripts/seed_staff.py`) and the enrollment steps to hand each new hire.
+
 ## Scheduled job
 
-"Repayment due soon" emails are not automatic. Add a Railway **Cron** service (or
-any scheduler) running, daily:
+`scripts/send_due_reminders.py` runs two daily maintenance jobs (see its
+docstring and `app/services/repayments_scheduler.py`):
+
+1. Flips any `RepaymentSchedule` row whose due date has passed with no full
+   payment to `overdue` (proactive - the on-read overdue computation in
+   `reporting.py`/`accounts.py` stays as a safety net if this is delayed).
+2. Emails each borrower with an installment due within
+   `REPAYMENT_REMINDER_LEAD_DAYS` days.
+
+Both are audited (`repayment_marked_overdue`, `repayment_reminder_sent` /
+`repayment_reminder_not_sent`). Today it only runs when invoked manually -
+nothing schedules it yet. **Set one of the following up:**
+
+### Option A: Railway Cron Schedule (recommended, no extra infra)
+
+Railway's cron scheduling is a **per-service dashboard setting** — there is
+currently no `railway.json`/`railway.toml` field for it, so it can't be
+committed to the repo. It also requires its own **service**, separate from
+the always-on `web` service: a cron service must exit after each run, which
+`web` (gunicorn) never does.
+
+1. In the Railway project, **New → GitHub Repo** → same repo/branch as `web`,
+   to create a second service (e.g. name it `scheduled-jobs`). It reuses this
+   repo's build (same `requirements.txt`/`.python-version`) — no separate
+   Dockerfile or build config needed.
+2. That service's **Settings → Deploy**:
+   - **Start Command**: `python scripts/send_due_reminders.py` (overrides the
+     `Procfile`'s `web` line for this service only).
+   - **Cron Schedule**: a crontab expression, e.g. `0 6 * * *` (06:00 UTC
+     daily). Minimum interval is 5 minutes; Railway skips a run if the
+     previous one is still going, so this only matters if the DB/SMTP calls
+     ever hang.
+3. **Variables**: copy the same variables as `web` (`DATABASE_URL`,
+   `MFA_ENCRYPTION_KEY` isn't needed here since this job never touches
+   TOTP secrets, but `NOTIFICATIONS_ENABLED`/`SMTP_*` are — otherwise
+   reminders run but never actually send). Easiest: Railway → service
+   Variables → **"Add variable" → reference** the `web` service's variables,
+   or just paste the same values.
+4. Deploy once manually to confirm it exits 0 quickly rather than hanging.
+
+### Option B: APScheduler inside the app (if you'd rather not add a service)
+
+Add `APScheduler` to `requirements.txt` and start a background scheduler in
+`app/__init__.py`'s `create_app()` that calls
+`repayments_scheduler.flip_overdue_installments()` and
+`.send_due_soon_reminders()` daily. **Tradeoff:** it runs inside every
+gunicorn worker process, so with `WEB_CONCURRENCY` > 1 the job fires once per
+worker (needs a lock, e.g. a Postgres advisory lock or a "only worker 0"
+check) unless guarded — Railway Cron avoids that entirely since it's a
+single, separate, short-lived process. Prefer Option A unless Railway Cron
+turns out to be unavailable on your plan.
 
 ```
-python scripts/send_due_reminders.py
+python scripts/send_due_reminders.py   # still the entrypoint either way
 ```
 
-## Running the tests (CI)
+## CI (GitHub Actions)
+
+`.github/workflows/ci.yml` runs on every push and pull request to `Develop`
+and `main`: install `requirements-dev.txt`, `ruff check .` (lint), then
+`pytest` (the full suite) — the build fails on any lint error or test
+failure. No secrets/env vars needed: tests run entirely against
+`TestingConfig` (in-memory SQLite, hardcoded test-only JWT/MFA keys,
+notifications disabled — see `tests/conftest.py`) and never touch Supabase,
+Railway, or a real mailbox.
+
+This is deliberately just a regression safety net, not a deployment
+pipeline — Railway deploys off its own GitHub integration (see above),
+independently of this workflow.
+
+Run the same checks locally before pushing:
 
 ```
 pip install -r requirements-dev.txt
-pytest
+ruff check .
+python -m pytest
 ```
-
-Tests use an in-memory SQLite database and never touch Supabase or send email.

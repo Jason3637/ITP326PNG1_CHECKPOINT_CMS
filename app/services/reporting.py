@@ -81,7 +81,6 @@ def _customer_dashboard(user: User) -> dict:
     loans = Loan.query.filter_by(user_id=user.id).order_by(Loan.id.desc()).all()
     active = [l for l in loans if l.status == LoanStatus.ACTIVE]
 
-    all_rows = [r for l in loans for r in l.repayment_schedule]
     active_rows = [r for l in active for r in l.repayment_schedule]
 
     total_borrowed = sum((Decimal(l.principal_amount) for l in loans), _ZERO)
@@ -169,7 +168,6 @@ def _portfolio_dashboard() -> dict:
     applications = LoanApplication.query.all()
 
     active = [l for l in loans if l.status == LoanStatus.ACTIVE]
-    active_ids = {l.id for l in active}
 
     all_active_rows = [r for l in active for r in l.repayment_schedule]
     outstanding_by_loan: dict[int, Decimal] = {}

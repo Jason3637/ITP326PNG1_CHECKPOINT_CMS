@@ -29,7 +29,7 @@ def test_apply_approve_repay_completes_loan(client, make_user, auth_header):
     application = r.get_json()
     app_id = application["id"]
     assert application["status"] in ("pending", "under_review")
-    assert application["credit_evaluation_result"]["algorithm"] == "placeholder-v1"
+    assert application["credit_evaluation_result"]["algorithm"] == "interim-v2"
 
     # officer sees it in the review queue
     r = client.get("/api/loans/applications", headers=oh)
