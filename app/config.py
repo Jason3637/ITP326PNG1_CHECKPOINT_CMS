@@ -92,6 +92,12 @@ class Config:
     REPAYMENT_REMINDER_LEAD_DAYS = int(os.environ.get("REPAYMENT_REMINDER_LEAD_DAYS", "3"))
     # ISO currency code, for the frontend to format amounts (Prime's Vault is in PNG).
     CURRENCY_CODE = os.environ.get("CURRENCY_CODE", "PGK")
+    # --- PRIME product ------------------------------------------------------
+    # The terms/policy version a customer must acknowledge at submission
+    # (see LoanApplication's terms_acceptance and loan_processing.submit_application).
+    # Bump this when the policy document changes; old acceptances keep whatever
+    # version they were recorded against.
+    CURRENT_POLICY_VERSION = os.environ.get("CURRENT_POLICY_VERSION", "2026-09-v1")
 
     # --- CORS (separately-hosted Next.js frontend) ------------------------
     # Comma-separated list of allowed origins. Dev defaults cover the Next.js

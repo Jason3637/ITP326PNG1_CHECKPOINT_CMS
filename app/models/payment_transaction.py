@@ -32,10 +32,16 @@ class PaymentTransaction(db.Model):
     status = db.Column(
         pg_enum(PaymentStatus, "payment_status"),
         nullable=False,
-        default=PaymentStatus.PENDING,
-        server_default=PaymentStatus.PENDING.value,
+        default=PaymentStatus.REPORTED,
+        server_default=PaymentStatus.REPORTED.value,
         index=True,
     )
+    # When the customer/staff reported this payment (set at creation, always).
+    reported_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # When staff VERIFIED it (the ledger-affecting moment) - null until then.
+    # Was previously set at creation; see payment_processing.verify_payment().
     paid_at = db.Column(db.DateTime(timezone=True))
     created_at = db.Column(
         db.DateTime(timezone=True), nullable=False, server_default=func.now()

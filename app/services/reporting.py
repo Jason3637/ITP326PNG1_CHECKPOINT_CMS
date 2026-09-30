@@ -24,6 +24,16 @@ from app.models.enums import (
 
 _ZERO = Decimal("0")
 _STAFF = (UserRole.LOAN_OFFICER, UserRole.ADMIN)
+# "In progress" loans still owed on - see accounts.py's identical constant.
+_IN_PROGRESS_STATUSES = (LoanStatus.ACTIVE, LoanStatus.OVERDUE)
+# Applications not yet decided - what officers/admins still need to act on.
+_OPEN_APPLICATION_STATUSES = (
+    LoanApplicationStatus.SUBMITTED,
+    LoanApplicationStatus.OFFICER_REVIEW,
+    LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED,
+    LoanApplicationStatus.RECOMMENDED_FOR_APPROVAL,
+    LoanApplicationStatus.ADMIN_REVIEW,
+)
 
 
 def _f(value) -> float:
@@ -79,7 +89,7 @@ def build_dashboard(user: User) -> dict:
 # ============================================================ customer view
 def _customer_dashboard(user: User) -> dict:
     loans = Loan.query.filter_by(user_id=user.id).order_by(Loan.id.desc()).all()
-    active = [l for l in loans if l.status == LoanStatus.ACTIVE]
+    active = [l for l in loans if l.status in _IN_PROGRESS_STATUSES]
 
     active_rows = [r for l in active for r in l.repayment_schedule]
 
@@ -167,7 +177,7 @@ def _portfolio_dashboard() -> dict:
     loans = Loan.query.all()
     applications = LoanApplication.query.all()
 
-    active = [l for l in loans if l.status == LoanStatus.ACTIVE]
+    active = [l for l in loans if l.status in _IN_PROGRESS_STATUSES]
 
     all_active_rows = [r for l in active for r in l.repayment_schedule]
     outstanding_by_loan: dict[int, Decimal] = {}
@@ -182,19 +192,15 @@ def _portfolio_dashboard() -> dict:
     at_risk = sum((outstanding_by_loan.get(lid, _ZERO) for lid in arrears_loan_ids), _ZERO)
 
     total_disbursed = sum((Decimal(l.principal_amount) for l in loans), _ZERO)
-    completed_txns = PaymentTransaction.query.filter_by(
-        status=PaymentStatus.COMPLETED
+    verified_txns = PaymentTransaction.query.filter_by(
+        status=PaymentStatus.VERIFIED
     ).all()
-    total_collected = sum((Decimal(t.amount) for t in completed_txns), _ZERO)
+    total_collected = sum((Decimal(t.amount) for t in verified_txns), _ZERO)
 
-    pending_review = [
-        a
-        for a in applications
-        if a.status in (LoanApplicationStatus.PENDING, LoanApplicationStatus.UNDER_REVIEW)
-    ]
+    pending_review = [a for a in applications if a.status in _OPEN_APPLICATION_STATUSES]
 
     # ---- charts ----
-    loans_by_status = {s: 0 for s in ("active", "completed", "defaulted")}
+    loans_by_status = {s.value: 0 for s in LoanStatus}
     for l in loans:
         loans_by_status[l.status.value] += 1
 
@@ -208,7 +214,7 @@ def _portfolio_dashboard() -> dict:
         if l.disbursed_at and _month_key(l.disbursed_at) in disb:
             disb[_month_key(l.disbursed_at)] += Decimal(l.principal_amount)
     coll = {m: _ZERO for m in months}
-    for t in completed_txns:
+    for t in verified_txns:
         key = _month_key(t.paid_at or t.created_at)
         if key in coll:
             coll[key] += Decimal(t.amount)
@@ -240,7 +246,7 @@ def _portfolio_dashboard() -> dict:
             "application_id": a.id,
             "user_id": a.user_id,
             "amount_requested": _f(a.amount_requested),
-            "term_months": a.term_months,
+            "prime_category": a.prime_category,
             "status": a.status.value,
             "credit_score": (a.credit_evaluation_result or {}).get("score"),
             "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,

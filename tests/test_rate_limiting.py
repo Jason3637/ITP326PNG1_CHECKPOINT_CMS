@@ -135,14 +135,12 @@ def test_mfa_setup_endpoint_is_rate_limited(client):
     assert r.status_code == 429
 
 
-def test_non_auth_endpoints_are_not_rate_limited(client, make_user, auth_header):
+def test_non_auth_endpoints_are_not_rate_limited(client, make_user, auth_header, apply_payload):
     """The limiter is applied per-endpoint, not as an app-wide default - a
     non-auth endpoint must tolerate more than 5 calls/minute without 429s."""
     ch = auth_header(make_user("customer"))
     statuses = [
-        _post(client, "/api/loans/apply", {
-            "amount_requested": 150, "term_months": 3, "repayment_frequency": "monthly",
-        }, headers=ch).status_code
+        _post(client, "/api/loans/apply", apply_payload(), headers=ch).status_code
         for _ in range(8)
     ]
     assert 429 not in statuses

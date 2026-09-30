@@ -84,6 +84,49 @@ def generate_schedule(
     return rows
 
 
+def generate_bullet_schedule(
+    loan, *, start_date: date | None = None, flush: bool = True
+) -> list[RepaymentSchedule]:
+    """PRIME's schedule: a single installment, due `loan.term_days` days
+    after disbursement, for the full total_repayable - no amortization, no
+    frequency. Kept separate from generate_schedule() (the legacy
+    amortized/multi-frequency product, still dormant for a future
+    above-K1,000 product) rather than forcing a 1-row case through it.
+    """
+    if loan.repayment_schedule:
+        raise ValueError(f"Loan {loan.id} already has a repayment schedule.")
+
+    start = start_date or (
+        loan.disbursed_at.date() if loan.disbursed_at else date.today()
+    )
+    due = start + timedelta(days=loan.term_days)
+    row = RepaymentSchedule(
+        loan=loan,
+        installment_number=1,
+        due_date=due,
+        amount_due=Decimal(loan.total_repayable).quantize(_CENTS),
+        amount_paid=Decimal("0.00"),
+        status=RepaymentStatus.UPCOMING,
+    )
+    db.session.add(row)
+    if flush:
+        db.session.flush()
+    return [row]
+
+
+def sync_loan_overdue_status(loan) -> None:
+    """Promote ACTIVE -> OVERDUE when the loan has >=1 OVERDUE installment,
+    demote OVERDUE -> ACTIVE when none remain. Does not touch PAID/CLOSED
+    loans. Called from flip_overdue_installments() (daily) and from
+    payment_processing.verify_payment() (a verified payment may clear the
+    last overdue installment).
+    """
+    if loan.status not in (LoanStatus.ACTIVE, LoanStatus.OVERDUE):
+        return
+    has_overdue = any(r.status == RepaymentStatus.OVERDUE for r in loan.repayment_schedule)
+    loan.status = LoanStatus.OVERDUE if has_overdue else LoanStatus.ACTIVE
+
+
 # =========================================================== daily maintenance
 # The two jobs below are meant to run on a schedule (see
 # scripts/send_due_reminders.py and DEPLOYMENT.md's "Scheduled job" section) -
@@ -129,6 +172,9 @@ def flip_overdue_installments() -> list[RepaymentSchedule]:
             },
             commit=False,
         )
+
+    for loan in {row.loan for row in rows}:
+        sync_loan_overdue_status(loan)
 
     if rows:
         db.session.commit()

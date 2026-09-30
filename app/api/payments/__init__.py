@@ -1,4 +1,8 @@
-"""Payments namespace - record repayments against installments."""
+"""Payments namespace - report a repayment, then an admin verifies it before
+the ledger moves (see app/services/payment_processing.py). A loan_officer
+may claim a transaction for review (start-verification) but only admin makes
+the actual verify/reject call.
+"""
 
 from flask import request
 from flask_restx import Namespace, Resource, abort, fields
@@ -9,14 +13,23 @@ from app.models import User
 from app.services import payment_processing
 from app.services.errors import ServiceError
 
-ns = Namespace("payments", description="Loan repayments.")
+ns = Namespace("payments", description="Loan repayments: report, then staff verify.")
 
 repay_in = ns.model(
     "RepayInput",
     {
         "repayment_schedule_id": fields.Integer(required=True, example=1),
-        "amount": fields.Float(required=True, example=458.40),
+        "amount": fields.Float(required=True, example=700.00),
         "payment_method": fields.String(required=True, example="cash"),
+    },
+)
+verify_in = ns.model(
+    "VerifyPaymentInput",
+    {
+        "decision": fields.String(required=True, enum=["verified", "rejected"], example="verified"),
+        "note": fields.String(
+            required=False, description="Required (as the reason) when decision is 'rejected'."
+        ),
     },
 )
 
@@ -29,16 +42,21 @@ payment_txn_out = ns.model(
         "repayment_schedule_id": fields.Integer,
         "amount": fields.Float,
         "payment_method": fields.String,
-        "status": fields.String(example="completed"),
-        "paid_at": fields.String,
+        "status": fields.String(example="reported"),
+        "reported_at": fields.String,
+        "paid_at": fields.String(description="Set only once VERIFIED - the settlement moment."),
     },
 )
-payment_result_out = ns.model(
-    "PaymentResult",
+report_result_out = ns.model(
+    "ReportPaymentResult",
+    {"transaction": fields.Nested(payment_txn_out)},
+)
+verify_result_out = ns.model(
+    "VerifyPaymentResult",
     {
         "transaction": fields.Nested(payment_txn_out),
         "installment": fields.Raw(
-            description="{installment_number, amount_due, amount_paid, shortfall, overpaid, status}"
+            description="{installment_number, amount_due, amount_paid, shortfall, overpaid, status} - present only when decision=verified"
         ),
         "loan_status": fields.String,
         "loan_completed": fields.Boolean,
@@ -65,7 +83,7 @@ def _current_user() -> User:
 class Repay(Resource):
     @ns.doc(security="Bearer")
     @ns.expect(repay_in)
-    @ns.response(201, "Payment recorded", payment_result_out)
+    @ns.response(201, "Payment reported (not yet verified - the ledger is untouched)", report_result_out)
     @ns.response(403, "Not your loan", error_out)
     @ns.response(409, "Installment already paid / loan not active", error_out)
     @roles_required("customer", "loan_officer", "admin")
@@ -83,10 +101,50 @@ class Repay(Resource):
         return result, 201
 
 
+@ns.route("/<int:transaction_id>/start-verification")
+class StartPaymentVerification(Resource):
+    @ns.doc(security="Bearer")
+    @ns.response(200, "REPORTED -> VERIFICATION_PENDING", report_result_out)
+    @ns.response(409, "Transaction is not in REPORTED", error_out)
+    @roles_required("loan_officer", "admin")
+    def post(self, transaction_id: int):
+        try:
+            result = payment_processing.start_payment_verification(_current_user(), transaction_id)
+        except ServiceError as exc:
+            abort(exc.status_code, exc.message)
+        return result
+
+
+@ns.route("/<int:transaction_id>/verify")
+class VerifyPayment(Resource):
+    @ns.doc(security="Bearer")
+    @ns.expect(verify_in)
+    @ns.response(200, "The ledger only moves here, and only for decision=verified", verify_result_out)
+    @ns.response(400, "note (a reason) is required when rejecting", error_out)
+    @ns.response(403, "Only an admin may verify or reject a payment", error_out)
+    @ns.response(409, "Transaction is not verifiable from its current status", error_out)
+    @roles_required("admin")
+    def post(self, transaction_id: int):
+        data = request.get_json(silent=True) or {}
+        decision = (data.get("decision") or "").strip().lower()
+        if decision not in {"verified", "rejected"}:
+            abort(400, "decision must be 'verified' or 'rejected'.")
+        try:
+            result = payment_processing.verify_payment(
+                _current_user(),
+                transaction_id,
+                decision=decision,
+                note=data.get("note"),
+            )
+        except ServiceError as exc:
+            abort(exc.status_code, exc.message)
+        return result
+
+
 @ns.route("/loan/<int:loan_id>")
 class LoanPayments(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "Payments recorded against this loan", payment_list_out)
+    @ns.response(200, "Payments reported/verified against this loan", payment_list_out)
     @roles_required("customer", "loan_officer", "admin")
     def get(self, loan_id: int):
         try:

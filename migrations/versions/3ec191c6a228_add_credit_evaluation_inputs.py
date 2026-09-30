@@ -30,16 +30,17 @@ def upgrade():
         'loan_applications',
         sa.Column('monthly_income', sa.Numeric(precision=12, scale=2), nullable=True),
     )
+    employment_status_enum = sa.Enum(
+        'employed', 'self_employed', 'unemployed', 'retired', 'student',
+        name='employment_status',
+    )
+    # add_column() does NOT auto-create a Postgres ENUM type the way
+    # create_table() does - create it explicitly first, or the ALTER TABLE
+    # fails with "type does not exist". No-op on SQLite (no native enum type).
+    employment_status_enum.create(op.get_bind(), checkfirst=True)
     op.add_column(
         'loan_applications',
-        sa.Column(
-            'employment_status',
-            sa.Enum(
-                'employed', 'self_employed', 'unemployed', 'retired', 'student',
-                name='employment_status',
-            ),
-            nullable=True,
-        ),
+        sa.Column('employment_status', employment_status_enum, nullable=True),
     )
     op.add_column(
         'loan_applications',

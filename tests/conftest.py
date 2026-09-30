@@ -94,6 +94,38 @@ def auth_header(access_token):
 
 
 @pytest.fixture
+def apply_payload(app):
+    """A minimal valid POST /api/loans/apply body - PRIME requires referees,
+    a disbursement method selection, and terms acceptance. Tests override
+    individual keys via ``apply_payload | {"amount_requested": 700}``.
+    """
+
+    def _payload(**overrides):
+        base = {
+            "amount_requested": 500,
+            "purpose_category": "business",
+            "purpose": "Inventory",
+            "confirmed_full_name": "Test Customer",
+            "confirmed_email": "test-customer@example.com",
+            "confirmed_phone_number": "+675 7123 4567",
+            "referees": [
+                {
+                    "full_name": "Maria Kaupa",
+                    "relationship": "sibling",
+                    "mobile_number": "+675 7123 4567",
+                }
+            ],
+            "disbursement_method_requested": "cash_on_hand",
+            "accept_terms": True,
+            "policy_version": app.config["CURRENT_POLICY_VERSION"],
+        }
+        base.update(overrides)
+        return base
+
+    return _payload
+
+
+@pytest.fixture
 def enrolled_customer(client):
     """Run the real register -> MFA setup -> verify flow; return the useful bits."""
 
