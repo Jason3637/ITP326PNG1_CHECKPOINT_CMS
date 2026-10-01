@@ -34,7 +34,20 @@ class Config:
     # DATABASE_URL is required for real use. During Phase A scaffolding the
     # app must still boot so /api/docs can be verified, so fall back to a
     # local throwaway SQLite file when it is unset.
-    SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL") or "sqlite:///scaffold_placeholder.db"
+    #
+    # Driver forced explicitly to psycopg2 (the only Postgres driver
+    # requirements.txt installs). Production crashed with "No module named
+    # 'psycopg'" - SQLAlchemy resolved the deployed DATABASE_URL to the
+    # psycopg (v3) dialect, which isn't installed, even though the same
+    # scheme resolves to psycopg2 fine locally. Rather than depend on
+    # whatever scheme Railway/Supabase hands us or how a given SQLAlchemy
+    # version's driver auto-detection behaves, force it to the driver we
+    # actually have.
+    _database_url = os.environ.get("DATABASE_URL")
+    if _database_url and _database_url.startswith(("postgresql", "postgres:")):
+        _scheme, _rest = _database_url.split("://", 1)
+        _database_url = f"postgresql+psycopg2://{_rest}"
+    SQLALCHEMY_DATABASE_URI = _database_url or "sqlite:///scaffold_placeholder.db"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     # Supabase poolers and IPv4 add-ons behave better with pre-ping + recycle.
     SQLALCHEMY_ENGINE_OPTIONS = {
