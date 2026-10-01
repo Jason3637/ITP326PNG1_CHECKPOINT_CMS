@@ -29,6 +29,13 @@ class PaymentTransaction(db.Model):
     # Free-form for now (e.g. "cash", "bank_transfer", "mobile_money:mpesa").
     # Tighten to an enum once the client confirms accepted channels.
     payment_method = db.Column(db.String(50), nullable=False)
+    # The date the customer says they paid (may be earlier than reported_at,
+    # e.g. reporting a payment made a few days ago) - distinct from
+    # reported_at, which is when the system recorded the report.
+    payment_date = db.Column(db.Date, nullable=False)
+    # Bank transfer / mobile money / cheque reference, where applicable
+    # (e.g. not meaningful for a cash-in-hand payment).
+    reference_number = db.Column(db.String(100))
     status = db.Column(
         pg_enum(PaymentStatus, "payment_status"),
         nullable=False,
@@ -36,6 +43,11 @@ class PaymentTransaction(db.Model):
         server_default=PaymentStatus.REPORTED.value,
         index=True,
     )
+    # Set only when status becomes REJECTED - why, for the customer/officer
+    # to see without needing admin-only AuditLog access. Mirrors
+    # LoanApplication.action_required_note's "surface it beyond the audit
+    # trail" pattern.
+    rejection_reason = db.Column(db.String(500))
     # When the customer/staff reported this payment (set at creation, always).
     reported_at = db.Column(
         db.DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -51,6 +63,11 @@ class PaymentTransaction(db.Model):
     loan = db.relationship("Loan", back_populates="payments")
     repayment_schedule = db.relationship(
         "RepaymentSchedule", back_populates="payments"
+    )
+    # Receipt/screenshot uploads - same Document/Supabase Storage pattern as
+    # loan application documents (see app/services/documents.py).
+    documents = db.relationship(
+        "Document", back_populates="payment_transaction"
     )
 
     def __repr__(self) -> str:

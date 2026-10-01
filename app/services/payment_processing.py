@@ -15,7 +15,7 @@ be recorded without immediately trusting it.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
@@ -27,7 +27,7 @@ from app.models.enums import (
     UserRole,
 )
 
-from . import audit, notifications
+from . import audit, documents, notifications
 from .errors import ServiceError
 
 _CENTS = Decimal("0.01")
@@ -41,9 +41,16 @@ def record_payment(
     repayment_schedule_id: int,
     amount,
     payment_method: str,
+    payment_date=None,
+    reference_number: str | None = None,
+    document_ids: list[int] | None = None,
 ) -> dict:
     """Customer or staff reports a payment. Ledger is untouched here - see
-    verify_payment().
+    verify_payment(). `payment_date` defaults to today if omitted (the date
+    the customer says they paid, which may be earlier than now).
+    `document_ids` are receipt/screenshot uploads (via the existing
+    POST /users/documents pattern - upload first, unlinked, then reference
+    the id here) linked to this transaction.
     """
     schedule = db.session.get(RepaymentSchedule, repayment_schedule_id)
     if schedule is None:
@@ -72,17 +79,35 @@ def record_payment(
     if not method:
         raise ServiceError("payment_method is required.")
 
+    today = date.today()
+    if payment_date is None:
+        pay_date = today
+    else:
+        try:
+            pay_date = payment_date if isinstance(payment_date, date) else date.fromisoformat(str(payment_date))
+        except ValueError:
+            raise ServiceError("payment_date must be an ISO date (YYYY-MM-DD).")
+    if pay_date > today:
+        raise ServiceError("payment_date cannot be in the future.")
+
+    ref = (reference_number or "").strip() or None
+
     now = datetime.now(timezone.utc)
     txn = PaymentTransaction(
         loan_id=loan.id,
         repayment_schedule_id=schedule.id,
         amount=pay_amount,
         payment_method=method,
+        payment_date=pay_date,
+        reference_number=ref,
         status=PaymentStatus.REPORTED,
         reported_at=now,
     )
     db.session.add(txn)
     db.session.flush()
+
+    if document_ids:
+        documents.link_documents_to_payment(document_ids, actor, txn.id)
 
     audit.record(
         "payment_reported",
@@ -95,6 +120,9 @@ def record_payment(
             "installment_number": schedule.installment_number,
             "amount": float(pay_amount),
             "payment_method": method,
+            "payment_date": pay_date.isoformat(),
+            "reference_number": ref,
+            "document_ids": document_ids or [],
             "entered_by_role": actor.role.value,
             "on_behalf": is_staff and actor.id != loan.user_id,
         },
@@ -163,12 +191,13 @@ def verify_payment(
 
     if decision == "rejected":
         txn.status = PaymentStatus.REJECTED
+        txn.rejection_reason = note.strip()
         audit.record(
             "payment_rejected",
             actor_id=actor.id,
             entity_type="PaymentTransaction",
             entity_id=txn.id,
-            details={"note": note},
+            details={"reason": txn.rejection_reason},
             commit=False,
         )
         db.session.commit()
@@ -245,6 +274,10 @@ def verify_payment(
     return result
 
 
+def _serialize_receipts(t: PaymentTransaction) -> list[dict]:
+    return [documents.serialize(d) for d in t.documents if d.superseded_by_id is None]
+
+
 def _serialize_transaction(t: PaymentTransaction) -> dict:
     return {
         "transaction": {
@@ -253,9 +286,13 @@ def _serialize_transaction(t: PaymentTransaction) -> dict:
             "repayment_schedule_id": t.repayment_schedule_id,
             "amount": float(Decimal(t.amount)),
             "payment_method": t.payment_method,
+            "payment_date": t.payment_date.isoformat() if t.payment_date else None,
+            "reference_number": t.reference_number,
             "status": str(t.status),
+            "rejection_reason": t.rejection_reason,
             "reported_at": t.reported_at.isoformat() if t.reported_at else None,
             "paid_at": t.paid_at.isoformat() if t.paid_at else None,
+            "receipts": _serialize_receipts(t),
         }
     }
 
@@ -277,9 +314,13 @@ def list_payments(loan_id: int, requester: User) -> list[dict]:
             "repayment_schedule_id": t.repayment_schedule_id,
             "amount": float(Decimal(t.amount)),
             "payment_method": t.payment_method,
+            "payment_date": t.payment_date.isoformat() if t.payment_date else None,
+            "reference_number": t.reference_number,
             "status": str(t.status),
+            "rejection_reason": t.rejection_reason,
             "reported_at": t.reported_at.isoformat() if t.reported_at else None,
             "paid_at": t.paid_at.isoformat() if t.paid_at else None,
+            "receipts": _serialize_receipts(t),
         }
         for t in rows
     ]

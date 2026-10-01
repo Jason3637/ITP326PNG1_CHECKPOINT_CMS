@@ -83,17 +83,19 @@ def _settled_loan(user, *, installment_paid_days_after_due: int | None):
     if installment_paid_days_after_due is not None:
         row.amount_paid = row.amount_due
         row.status = RepaymentStatus.PAID
+        paid_at = datetime.combine(
+            row.due_date + timedelta(days=installment_paid_days_after_due),
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
         txn = PaymentTransaction(
             loan_id=loan.id,
             repayment_schedule_id=row.id,
             amount=row.amount_due,
             payment_method="cash",
+            payment_date=paid_at.date(),
             status=PaymentStatus.VERIFIED,
-            paid_at=datetime.combine(
-                row.due_date + timedelta(days=installment_paid_days_after_due),
-                datetime.min.time(),
-                tzinfo=timezone.utc,
-            ),
+            paid_at=paid_at,
         )
         db.session.add(txn)
     db.session.flush()

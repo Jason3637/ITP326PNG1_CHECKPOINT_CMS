@@ -21,6 +21,21 @@ repay_in = ns.model(
         "repayment_schedule_id": fields.Integer(required=True, example=1),
         "amount": fields.Float(required=True, example=700.00),
         "payment_method": fields.String(required=True, example="cash"),
+        "payment_date": fields.String(
+            required=False,
+            example="2026-09-28",
+            description="ISO date the customer says they paid. Defaults to today if omitted.",
+        ),
+        "reference_number": fields.String(
+            required=False,
+            example="MPESA-9K2H4J",
+            description="Bank transfer / mobile money / cheque reference, where applicable.",
+        ),
+        "document_ids": fields.List(
+            fields.Integer,
+            required=False,
+            description="Ids of receipt/screenshot documents already uploaded via POST /users/documents.",
+        ),
     },
 )
 verify_in = ns.model(
@@ -34,6 +49,16 @@ verify_in = ns.model(
 )
 
 error_out = ns.model("ErrorResponse", {"message": fields.String})
+receipt_out = ns.model(
+    "PaymentReceipt",
+    {
+        "id": fields.Integer,
+        "document_type": fields.String(example="receipt"),
+        "storage_path": fields.String,
+        "uploaded_at": fields.String,
+        "is_current": fields.Boolean,
+    },
+)
 payment_txn_out = ns.model(
     "PaymentTransaction",
     {
@@ -42,9 +67,15 @@ payment_txn_out = ns.model(
         "repayment_schedule_id": fields.Integer,
         "amount": fields.Float,
         "payment_method": fields.String,
+        "payment_date": fields.String(description="Date the customer says they paid."),
+        "reference_number": fields.String,
         "status": fields.String(example="reported"),
+        "rejection_reason": fields.String(description="Set only when status is rejected."),
         "reported_at": fields.String,
         "paid_at": fields.String(description="Set only once VERIFIED - the settlement moment."),
+        "receipts": fields.List(
+            fields.Nested(receipt_out), description="Current (non-superseded) receipt/screenshot uploads."
+        ),
     },
 )
 report_result_out = ns.model(
@@ -95,6 +126,9 @@ class Repay(Resource):
                 repayment_schedule_id=data.get("repayment_schedule_id"),
                 amount=data.get("amount"),
                 payment_method=data.get("payment_method"),
+                payment_date=data.get("payment_date"),
+                reference_number=data.get("reference_number"),
+                document_ids=data.get("document_ids"),
             )
         except ServiceError as exc:
             abort(exc.status_code, exc.message)

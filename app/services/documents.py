@@ -59,19 +59,27 @@ def _can_access(document: Document, requester: User) -> bool:
 
 def _supersede_prior_versions(new_document: Document, actor: User) -> None:
     """Versioning policy: superseded-but-kept. When `new_document` is linked
-    to an application, any other document already linked to that SAME
-    application with the SAME document_type is marked superseded (never
-    deleted or overwritten) - so the officer view shows only the latest by
-    default, but the full history stays available for audit.
+    to an application OR a payment transaction (its "parent"), any other
+    document with the SAME parent and the SAME document_type is marked
+    superseded (never deleted or overwritten) - so the officer/admin view
+    shows only the latest by default, but the full history stays available
+    for audit.
 
-    Only applies once a document is linked to a specific application:
-    unlinked/orphan documents (loan_application_id IS NULL) have no "current
-    for this application" context to supersede within.
+    Only applies once a document is linked to a specific parent:
+    unlinked/orphan documents (both ids NULL) have no "current for this
+    parent" context to supersede within. A document has at most one parent.
     """
-    if new_document.loan_application_id is None:
+    if new_document.loan_application_id is not None:
+        parent_filter = Document.loan_application_id == new_document.loan_application_id
+        parent_details = {"loan_application_id": new_document.loan_application_id}
+    elif new_document.payment_transaction_id is not None:
+        parent_filter = Document.payment_transaction_id == new_document.payment_transaction_id
+        parent_details = {"payment_transaction_id": new_document.payment_transaction_id}
+    else:
         return
+
     siblings = Document.query.filter(
-        Document.loan_application_id == new_document.loan_application_id,
+        parent_filter,
         Document.document_type == new_document.document_type,
         Document.id != new_document.id,
         Document.superseded_by_id.is_(None),
@@ -86,7 +94,7 @@ def _supersede_prior_versions(new_document: Document, actor: User) -> None:
             details={
                 "superseded_by_document_id": new_document.id,
                 "document_type": str(new_document.document_type),
-                "loan_application_id": new_document.loan_application_id,
+                **parent_details,
             },
             commit=False,
         )
@@ -201,6 +209,7 @@ def serialize(document: Document) -> dict:
         "id": document.id,
         "user_id": document.user_id,
         "loan_application_id": document.loan_application_id,
+        "payment_transaction_id": document.payment_transaction_id,
         "document_type": str(document.document_type),
         "storage_path": document.storage_path,
         "uploaded_at": document.uploaded_at.isoformat() if document.uploaded_at else None,
@@ -255,6 +264,36 @@ def link_documents_to_application(
     rows.sort(key=lambda d: d.id)
     for row in rows:
         row.loan_application_id = application_id
+    for row in rows:
+        _supersede_prior_versions(row, owner)
+    return rows
+
+
+def link_documents_to_payment(
+    document_ids: list[int], owner: User, payment_transaction_id: int
+) -> list[Document]:
+    """Attach previously-uploaded receipt/screenshot documents to a just-
+    created PaymentTransaction (see payment_processing.record_payment()).
+    Same shape and superseded-but-kept versioning as
+    link_documents_to_application() - kept as a separate function rather
+    than a generic "parent" parameter so each call site's intent stays
+    explicit and its error messages stay specific.
+
+    Raises ServiceError if any id doesn't exist or doesn't belong to owner.
+    """
+    if not document_ids:
+        return []
+    rows = Document.query.filter(Document.id.in_(document_ids)).all()
+    found_ids = {d.id for d in rows}
+    missing = set(document_ids) - found_ids
+    if missing:
+        raise ServiceError(f"Unknown document_id(s): {sorted(missing)}.")
+    for row in rows:
+        if row.user_id != owner.id:
+            raise ServiceError(f"Document {row.id} does not belong to this user.", 403)
+    rows.sort(key=lambda d: d.id)
+    for row in rows:
+        row.payment_transaction_id = payment_transaction_id
     for row in rows:
         _supersede_prior_versions(row, owner)
     return rows

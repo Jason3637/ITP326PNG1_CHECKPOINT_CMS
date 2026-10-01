@@ -28,6 +28,16 @@ class Document(db.Model):
         nullable=True,
         index=True,
     )
+    # Set when this document is a repayment receipt/screenshot attached to a
+    # specific reported payment (see app/services/payment_processing.py).
+    # A document has at most one "parent" - either this or
+    # loan_application_id, never both.
+    payment_transaction_id = db.Column(
+        db.Integer,
+        db.ForeignKey("payment_transactions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     document_type = db.Column(
         pg_enum(DocumentType, "document_type"), nullable=False
     )
@@ -55,6 +65,9 @@ class Document(db.Model):
     user = db.relationship("User", back_populates="documents")
     loan_application = db.relationship(
         "LoanApplication", back_populates="documents"
+    )
+    payment_transaction = db.relationship(
+        "PaymentTransaction", back_populates="documents"
     )
     superseded_by = db.relationship(
         "Document", remote_side=[id], foreign_keys=[superseded_by_id]
