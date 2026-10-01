@@ -12,7 +12,7 @@ database before moving on; there is now also an automated pytest suite.
 |---|---|---|
 | **Auth** (`/api/auth/*`) | register, mfa/setup, mfa/verify-setup, login, mfa/verify-login, refresh, me | Complete. MFA (TOTP) mandatory for every role. Scoped tokens gate each step. JWT carries a `role` claim. Backup codes (hashed, single-use). Every attempt audited. |
 | **Members** (`/api/users/*`) | profile, documents (upload/list/download), member documents (staff) | Complete. |
-| **Loans** (`/api/loans/*`) | apply, applications (review), applications/{id}/decision, mine | Complete. Apply → credit check → officer approve/reject → on approve: price + disburse + generate repayment schedule. |
+| **Loans** (`/api/loans/*`, `/api/officer/*`) | apply, officer queues/review/checklist/customer history, request information, recommend, admin decision, disburse, mine | Apply → officer claims, verifies the checklist, may request more information, recommends → admin decides → admin disburses (creates the loan + schedule). See BACKEND.md "Application workflow" and "RBAC matrix". |
 | **Accounts** (`/api/accounts/summary`) | dashboard read model | Complete. |
 | **Payments** (`/api/payments/*`) | repay, loan/{id} | Complete. Records payment against an installment, rolls status up to loan completion. |
 | **Reports** (`/api/reports/*`) | dashboard (role-aware, Chart.js-shaped), audit-logs (admin, paginated/filterable) | Complete. |
@@ -38,7 +38,7 @@ response models (35 schema definitions). `BACKEND.md` (reference),
 
 | Thing | Current state | Why it matters |
 |---|---|---|
-| **Credit evaluation** | `credit_evaluation.py` — a transparent placeholder heuristic (amount vs. cap, term length, prior-loan history, account standing → score 0–100). Flagged in code and in every stored result (`"algorithm": "placeholder-v1"`). | Must be replaced with Prime's Vault's real lending criteria (income verification, affordability ratios, guarantor rules). It never auto-decides — an officer always approves/rejects. |
+| **Credit evaluation** | `credit_evaluation.py` — a transparent placeholder heuristic (amount vs. cap, term length, prior-loan history, account standing → score 0–100). Flagged in code and in every stored result (`"algorithm": "placeholder-v1"`). | Must be replaced with Prime's Vault's real lending criteria (income verification, affordability ratios, guarantor rules). It never auto-decides — an officer recommends and an admin approves/rejects. |
 | **Disbursement** | Approval == disbursement (`disbursed_at = now` on approve). No separate "funds released" step or bank integration. | If disbursement is a distinct real-world event, add a `disburse` transition. |
 | **Payments** | Marked `completed` immediately. No payment gateway — built for manual/cash entry by staff or self-report by customers. | When a gateway (card, mobile money) is added: create the transaction as `pending`, settle on callback. |
 | **Overdue status** | Installments are only flipped to `overdue` by reporting logic on read (`due_date < today AND not paid`); the stored `overdue` enum value is never written by a job yet. | Wire a daily job to persist overdue status + trigger dunning, alongside `send_due_reminders.py`. |

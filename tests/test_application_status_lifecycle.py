@@ -14,6 +14,8 @@ are genuinely separable from an active Loan - nothing shows up under
 
 from app.models import LoanApplication
 
+import _workflow
+
 
 def test_full_lifecycle_single_row_no_premature_loan(
     client, make_user, auth_header, apply_payload
@@ -43,11 +45,7 @@ def test_full_lifecycle_single_row_no_premature_loan(
     assert _count_rows() == 1
 
     # OFFICER_REVIEW -> CUSTOMER_ACTION_REQUIRED
-    r = client.post(
-        f"/api/loans/applications/{app_id}/request-action",
-        headers=oh,
-        json={"note": "Please add a second referee."},
-    )
+    r = _workflow.request_info(client, app_id, oh, reason="Please add a second referee.")
     assert r.status_code == 200
     assert r.get_json()["status"] == "customer_action_required"
     assert r.get_json()["status_label"] == "Action Required"
@@ -56,11 +54,14 @@ def test_full_lifecycle_single_row_no_premature_loan(
 
     # CUSTOMER_ACTION_REQUIRED -> OFFICER_REVIEW, via the CUSTOMER's own
     # /respond endpoint (not the officer's resume-review) - same row, updated.
+    request_id = _workflow.open_request_ids(client, app_id, ch)[0]
     r = client.post(
         f"/api/loans/applications/{app_id}/respond",
         headers=ch,
         json={
-            "response_note": "Added Maria Kaupa as a second referee.",
+            "responses": [
+                {"information_request_id": request_id, "response_note": "Added Maria Kaupa."}
+            ],
             "referees": [
                 {"full_name": "John Doe", "relationship": "sibling", "mobile_number": "+675 700 0001"},
                 {"full_name": "Maria Kaupa", "relationship": "friend", "mobile_number": "+675 700 0002"},
@@ -75,12 +76,10 @@ def test_full_lifecycle_single_row_no_premature_loan(
     assert _count_rows() == 1, "the CUSTOMER_ACTION_REQUIRED round trip must not duplicate the application"
 
     # OFFICER_REVIEW -> RECOMMENDED_FOR_APPROVAL
-    r = client.post(
-        f"/api/loans/applications/{app_id}/recommend", headers=oh, json={"note": "Referees confirmed."}
-    )
+    r = _workflow.recommend(client, app_id, oh, comments="Referees confirmed.")
     assert r.status_code == 200
-    assert r.get_json()["status"] == "recommended_for_approval"
-    assert r.get_json()["status_label"] == "Under Review", "internal staff stages stay hidden from the customer"
+    assert r.get_json()["application"]["status"] == "recommended_for_approval"
+    assert r.get_json()["application"]["status_label"] == "Under Review", "internal staff stages stay hidden from the customer"
     assert _count_rows() == 1
 
     # RECOMMENDED_FOR_APPROVAL -> ADMIN_REVIEW
@@ -131,14 +130,16 @@ def test_early_rejection_from_officer_review_is_terminal_and_creates_no_loan(
 ):
     customer = make_user("customer")
     officer = make_user("loan_officer")
-    ch, oh = auth_header(customer), auth_header(officer)
+    admin = make_user("admin")
+    ch, oh, ah = auth_header(customer), auth_header(officer), auth_header(admin)
 
     r = client.post("/api/loans/apply", headers=ch, json=apply_payload())
     app_id = r.get_json()["id"]
     client.post(f"/api/loans/applications/{app_id}/officer-review", headers=oh)
 
+    # Early-exit rejection is the admin's call; the officer can only recommend it.
     r = client.post(
-        f"/api/loans/applications/{app_id}/reject", headers=oh, json={"note": "Score too low."}
+        f"/api/loans/applications/{app_id}/reject", headers=ah, json={"note": "Score too low."}
     )
     assert r.status_code == 200
     assert r.get_json()["status"] == "rejected"
@@ -163,7 +164,7 @@ def test_admin_rejection_from_admin_review_creates_no_loan(
     r = client.post("/api/loans/apply", headers=ch, json=apply_payload())
     app_id = r.get_json()["id"]
     client.post(f"/api/loans/applications/{app_id}/officer-review", headers=oh)
-    client.post(f"/api/loans/applications/{app_id}/recommend", headers=oh)
+    _workflow.recommend(client, app_id, oh)
     client.post(f"/api/loans/applications/{app_id}/admin-review", headers=ah)
 
     r = client.post(

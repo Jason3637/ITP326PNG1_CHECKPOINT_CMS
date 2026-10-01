@@ -5,6 +5,8 @@ from decimal import Decimal
 
 import pytest
 
+import _workflow
+
 
 def test_apply_through_full_chain_to_paid(client, make_user, auth_header, apply_payload):
     customer = make_user("customer")
@@ -23,7 +25,7 @@ def test_apply_through_full_chain_to_paid(client, make_user, auth_header, apply_
     assert application["prime_category"] == "PRIME 2"
     assert application["pricing"]["interest_amount"] == 200
     assert application["pricing"]["total_repayable"] == 700
-    assert application["credit_evaluation_result"]["algorithm"] == "interim-v2"
+    assert "credit_evaluation_result" not in application, "advisory score is staff-only"
 
     # officer sees it in the review queue
     r = client.get("/api/loans/applications", headers=oh)
@@ -36,11 +38,9 @@ def test_apply_through_full_chain_to_paid(client, make_user, auth_header, apply_
     assert r.get_json()["status"] == "officer_review"
 
     # OFFICER_REVIEW -> RECOMMENDED_FOR_APPROVAL
-    r = client.post(
-        f"/api/loans/applications/{app_id}/recommend", headers=oh, json={"note": "Looks good."}
-    )
+    r = _workflow.recommend(client, app_id, oh, comments="Looks good.")
     assert r.status_code == 200, r.get_json()
-    assert r.get_json()["status"] == "recommended_for_approval"
+    assert r.get_json()["application"]["status"] == "recommended_for_approval"
 
     # loan_officer cannot skip straight to admin-review or decide
     assert client.post(f"/api/loans/applications/{app_id}/admin-review", headers=oh).status_code == 403
@@ -133,10 +133,12 @@ def test_apply_through_full_chain_to_paid(client, make_user, auth_header, apply_
     assert counts["active"] == 0 and counts["paid"] == 1
 
 
-def test_officer_rejects_early_without_admin_involvement(client, make_user, auth_header, apply_payload):
+def test_only_admin_can_reject_early(client, make_user, auth_header, apply_payload):
+    """A loan officer can only RECOMMEND rejection; the early-exit reject is admin-only."""
     customer = make_user("customer")
     officer = make_user("loan_officer")
-    ch, oh = auth_header(customer), auth_header(officer)
+    admin = make_user("admin")
+    ch, oh, ah = auth_header(customer), auth_header(officer), auth_header(admin)
 
     r = client.post("/api/loans/apply", headers=ch, json=apply_payload())
     app_id = r.get_json()["id"]
@@ -144,6 +146,11 @@ def test_officer_rejects_early_without_admin_involvement(client, make_user, auth
 
     r = client.post(
         f"/api/loans/applications/{app_id}/reject", headers=oh, json={"note": "Ineligible."}
+    )
+    assert r.status_code == 403
+
+    r = client.post(
+        f"/api/loans/applications/{app_id}/reject", headers=ah, json={"note": "Ineligible."}
     )
     assert r.status_code == 200, r.get_json()
     assert r.get_json()["status"] == "rejected"
@@ -158,20 +165,24 @@ def test_customer_action_required_round_trip(client, make_user, auth_header, app
     app_id = r.get_json()["id"]
     client.post(f"/api/loans/applications/{app_id}/officer-review", headers=oh)
 
-    r = client.post(
-        f"/api/loans/applications/{app_id}/request-action",
-        headers=oh,
-        json={"note": "Please confirm your employer."},
-    )
+    # at least one request item is required
+    r = client.post(f"/api/loans/applications/{app_id}/request-action", headers=oh, json={})
+    assert r.status_code == 400
+
+    r = _workflow.request_info(client, app_id, oh, reason="Please confirm your employer.")
     assert r.status_code == 200, r.get_json()
     assert r.get_json()["status"] == "customer_action_required"
 
-    # a note is required
-    r = client.post(f"/api/loans/applications/{app_id}/request-action", headers=oh, json={})
-    assert r.status_code in (400, 409)
-
-    r = client.post(f"/api/loans/applications/{app_id}/resume-review", headers=oh)
+    # resuming without the customer cancels the open request, so a reason is required
+    r = client.post(f"/api/loans/applications/{app_id}/resume-review", headers=oh, json={})
+    assert r.status_code == 400
+    r = client.post(
+        f"/api/loans/applications/{app_id}/resume-review",
+        headers=oh,
+        json={"reason": "Confirmed by phone."},
+    )
     assert r.status_code == 200, r.get_json()
+    assert [q["status"] for q in r.get_json()["information_requests"]] == ["cancelled"]
     assert r.get_json()["status"] == "officer_review"
 
 

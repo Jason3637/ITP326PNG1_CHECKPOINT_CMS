@@ -290,7 +290,9 @@ def test_apply_endpoint_stores_and_returns_the_new_fields(client, make_user, aut
     assert body["monthly_income"] == 2000.0
     assert body["employment_status"] == "employed"
     assert body["existing_monthly_debt"] == 0.0
-    assert body["credit_evaluation_result"]["algorithm"] == "interim-v2"
+    assert "credit_evaluation_result" not in body, "advisory score is staff-only"
+    stored = db.session.get(LoanApplication, body["id"]).credit_evaluation_result
+    assert stored["algorithm"] == "interim-v2"
 
 
 def test_credit_evaluation_never_influences_status(client, make_user, auth_header, apply_payload):
@@ -306,11 +308,13 @@ def test_credit_evaluation_never_influences_status(client, make_user, auth_heade
         json=apply_payload(monthly_income=2000, employment_status="employed"),
     )
     assert r.status_code == 201, r.get_json()
-    assert r.get_json()["credit_evaluation_result"]["insufficient_data"] is False
+    stored = db.session.get(LoanApplication, r.get_json()["id"]).credit_evaluation_result
+    assert stored["insufficient_data"] is False
     assert r.get_json()["status"] == "submitted"
 
     without_income = auth_header(make_user("customer"))
     r = client.post("/api/loans/apply", headers=without_income, json=apply_payload())
     assert r.status_code == 201, r.get_json()
-    assert r.get_json()["credit_evaluation_result"]["insufficient_data"] is True
+    stored = db.session.get(LoanApplication, r.get_json()["id"]).credit_evaluation_result
+    assert stored["insufficient_data"] is True
     assert r.get_json()["status"] == "submitted"

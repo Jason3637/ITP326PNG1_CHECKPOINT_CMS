@@ -83,29 +83,52 @@ Execute. To authorize: run `/auth/login` then `/auth/mfa/verify-login`, copy
 the returned `access_token`, click the padlock ("Authorize," top-right), and
 paste `Bearer <token>`.
 
-### §A — Review & decide (Loan Officer)
+### §A — Review & recommend (Loan Officer)
 
 1. Authorize as the loan officer (login → verify-login → Authorize).
-2. `GET /api/loans/applications` — *expect:* the customer's application from
-   step 4, status "pending."
+2. `GET /api/officer/queues/awaiting_review` — *expect:* the customer's
+   application from step 4, status "submitted", unassigned.
+3. `POST /api/loans/applications/{application_id}/officer-review` — *expect:*
+   200, status "officer_review", `assigned_officer_id` is you.
+4. `GET /api/officer/applications/{application_id}` — *expect:* customer,
+   PRIME pricing, referees, documents, the checklist (all "pending") and a
+   `credit_assessment` labelled "Advisory - not a decision input".
+5. For each checklist item: `PATCH /api/officer/applications/{application_id}/checklist/{item_type}`
+   body `{"status": "verified", "note": "UAT"}`. *Expect:* 200; the item
+   shows you and a timestamp.
+6. `POST /api/loans/applications/{application_id}/recommend` — body
+   `{"recommendation": "recommend_approval", "comments": "UAT"}`. *Expect:*
+   200, status "recommended_for_approval", and no loan yet.
+7. Try `POST /api/loans/applications/{application_id}/decision` as the
+   officer — *expect:* 403 (only an admin decides).
+
+### §B — Decide & disburse (Admin)
+
+1. Authorize as admin.
+2. `POST /api/loans/applications/{application_id}/admin-review` — *expect:*
+   status "admin_review".
 3. `POST /api/loans/applications/{application_id}/decision` — body
-   `{"decision": "approve", "note": "UAT approval"}`. *Expect:* 200, a new
-   loan object with `id` and a `repayment_schedule` array — **keep this
-   response open**, needed next.
-
-### §B — Record a payment (Loan Officer / Admin)
-
-1. `POST /api/payments/repay` — body `{"repayment_schedule_id": <from A3>,
-   "amount": <installment amount from A3>, "payment_method": "cash"}`.
-   *Expect:* 201, the installment's status flips to settled.
+   `{"decision": "approve", "note": "UAT approval"}`. *Expect:* status
+   "awaiting_disbursement".
+4. `POST /api/loans/applications/{application_id}/disburse` — body
+   `{"method": "cash_on_hand"}`. *Expect:* 200, a loan object with a
+   `repayment_schedule` array — **keep this response open**, needed next.
+5. `POST /api/payments/repay` — body `{"repayment_schedule_id": <from B4>,
+   "amount": <total_repayable from B4>, "payment_method": "cash"}`.
+   *Expect:* 201, status "reported" (the balance does not change yet).
+6. `POST /api/payments/{transaction_id}/verify` — body
+   `{"decision": "verified"}`. *Expect:* the installment is paid and the
+   loan status is "paid".
 
 ### §C — Audit & parameters (Admin)
 
 1. Authorize as admin (same login → verify-login → Authorize flow).
 2. `GET /api/reports/audit-logs` — *expect:* rows for every action above
    (register, mfa_enabled, login_success, loan_application_submitted,
-   loan_application_decision, loan_disbursed, payment_recorded), each with
-   an actor, IP, and timestamp.
+   loan_application_officer_review_started, verification_item_updated,
+   loan_application_recommended_for_approval, loan_application_decision,
+   loan_disbursed, payment_reported, payment_verified), each with an actor,
+   IP, and timestamp.
 3. `GET /api/admin/parameters` — *expect:* current values (e.g.
    `default_annual_interest_rate`) with `source: "default"`.
 4. `PUT /api/admin/parameters` — body `{"default_annual_interest_rate":

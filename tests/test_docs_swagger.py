@@ -1,4 +1,4 @@
-"""The Swagger spec at /api/swagger.json covers every Phase B2-B5 endpoint
+"""The Swagger spec at /api/swagger.json covers every Phase B2-B5 and Loan Officer workflow endpoint
 with typed request/response models (not free-form JSON)."""
 
 import pytest
@@ -42,6 +42,15 @@ EXPECTED_ENDPOINTS = {
     ("get", "/reports/audit-logs"),
     ("get", "/admin/parameters"),
     ("put", "/admin/parameters"),
+    # Loan Officer workflow
+    ("post", "/loans/applications/{application_id}/assign"),
+    ("post", "/loans/applications/{application_id}/return-to-officer"),
+    ("get", "/officer/queues"),
+    ("get", "/officer/queues/{queue}"),
+    ("get", "/officer/applications/{application_id}"),
+    ("get", "/officer/applications/{application_id}/checklist"),
+    ("patch", "/officer/applications/{application_id}/checklist/{item_type}"),
+    ("get", "/officer/applications/{application_id}/customer-history"),
 }
 
 # Endpoints that take a JSON body and must declare a body model.
@@ -61,6 +70,10 @@ BODY_ENDPOINTS = {
     ("post", "/payments/repay"),
     ("post", "/payments/{transaction_id}/verify"),
     ("put", "/admin/parameters"),
+    ("post", "/loans/applications/{application_id}/resume-review"),
+    ("post", "/loans/applications/{application_id}/assign"),
+    ("post", "/loans/applications/{application_id}/return-to-officer"),
+    ("patch", "/officer/applications/{application_id}/checklist/{item_type}"),
 }
 
 

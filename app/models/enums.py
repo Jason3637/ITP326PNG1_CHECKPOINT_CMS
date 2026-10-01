@@ -47,6 +47,14 @@ class LoanApplicationStatus(enum.StrEnum):
         under_review  -> officer_review
         approved      -> approved         (unchanged)
         rejected      -> rejected         (unchanged)
+
+    RECOMMENDED_FOR_REJECTION (Loan Officer workflow) is the counterpart of
+    RECOMMENDED_FOR_APPROVAL: a loan officer cannot reject, only recommend
+    rejection, and the application still goes to an admin for the final call.
+
+    RETURNED_TO_OFFICER: an admin sent a recommended application back to its
+    officer for more work (reason kept in AdminReturn); the officer resumes
+    review from there.
     """
 
     DRAFT = "draft"
@@ -54,10 +62,12 @@ class LoanApplicationStatus(enum.StrEnum):
     OFFICER_REVIEW = "officer_review"
     CUSTOMER_ACTION_REQUIRED = "customer_action_required"
     RECOMMENDED_FOR_APPROVAL = "recommended_for_approval"
+    RECOMMENDED_FOR_REJECTION = "recommended_for_rejection"
     ADMIN_REVIEW = "admin_review"
     APPROVED = "approved"
     REJECTED = "rejected"
     AWAITING_DISBURSEMENT = "awaiting_disbursement"
+    RETURNED_TO_OFFICER = "returned_to_officer"
 
 
 class LoanStatus(enum.StrEnum):
@@ -128,3 +138,58 @@ class LoanPurposeCategory(enum.StrEnum):
     HOME_IMPROVEMENT = "home_improvement"
     DEBT_CONSOLIDATION = "debt_consolidation"
     OTHER = "other"
+
+
+# ------------------------------------------------------- Loan Officer workflow
+class InformationRequestType(enum.StrEnum):
+    """What kind of thing an officer is asking the customer for. The
+    customer-facing explanation lives in InformationRequest.reason; this is
+    the category, for filtering and reporting.
+    """
+
+    MISSING_DOCUMENT = "missing_document"
+    DOCUMENT_UNCLEAR = "document_unclear"
+    DOCUMENT_EXPIRED = "document_expired"
+    INFORMATION_MISMATCH = "information_mismatch"
+    REFEREE_UNREACHABLE = "referee_unreachable"
+    EMPLOYMENT_CONFIRMATION = "employment_confirmation"
+    OTHER = "other"
+
+
+class InformationRequestStatus(enum.StrEnum):
+    """OPEN until the customer answers it (RESPONDED, with a matching
+    InformationResponse row) or staff withdraw it (CANCELLED, e.g. resuming
+    review without waiting). Never deleted either way.
+    """
+
+    OPEN = "open"
+    RESPONDED = "responded"
+    CANCELLED = "cancelled"
+
+
+class VerificationItemStatus(enum.StrEnum):
+    PENDING = "pending"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class OfficerRecommendationType(enum.StrEnum):
+    """"Request more information" is deliberately NOT a member: it never goes
+    to an admin, so it's an InformationRequest, not a recommendation.
+    """
+
+    RECOMMEND_APPROVAL = "recommend_approval"
+    RECOMMEND_REJECTION = "recommend_rejection"
+
+
+class CustomerVerificationStatus(enum.StrEnum):
+    VERIFIED = "verified"
+    INVALIDATED = "invalidated"
+
+
+class CustomerVerificationInvalidationReason(enum.StrEnum):
+    EXPIRED = "expired"
+    INFORMATION_CHANGED = "information_changed"
+    STAFF_REQUESTED = "staff_requested"
+    POLICY_UPDATED = "policy_updated"

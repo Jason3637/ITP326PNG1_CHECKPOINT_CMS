@@ -10,6 +10,8 @@ from decimal import Decimal
 from app.extensions import db
 from app.models import RepaymentSchedule
 
+import _workflow
+
 
 def _disbursed_loan(client, make_user, auth_header, apply_payload):
     """Apply -> officer-review -> recommend -> admin-review -> approve ->
@@ -24,7 +26,7 @@ def _disbursed_loan(client, make_user, auth_header, apply_payload):
     r = client.post("/api/loans/apply", headers=ch, json=apply_payload(amount_requested=500))
     app_id = r.get_json()["id"]
     client.post(f"/api/loans/applications/{app_id}/officer-review", headers=oh)
-    client.post(f"/api/loans/applications/{app_id}/recommend", headers=oh)
+    _workflow.recommend(client, app_id, oh)
     client.post(f"/api/loans/applications/{app_id}/admin-review", headers=ah)
     client.post(
         f"/api/loans/applications/{app_id}/decision", headers=ah, json={"decision": "approve"}

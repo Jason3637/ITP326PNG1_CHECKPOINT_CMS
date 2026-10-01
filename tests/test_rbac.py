@@ -14,6 +14,8 @@ from app.extensions import db
 from app.models import Document
 from app.models.enums import DocumentType
 
+import _workflow
+
 
 def test_customer_cannot_list_applications(client, make_user, auth_header):
     ch = auth_header(make_user("customer"))
@@ -197,7 +199,7 @@ def test_customer_cannot_list_another_customers_loan_payments(
     r = client.post("/api/loans/apply", headers=oh_owner, json=apply_payload())
     app_id = r.get_json()["id"]
     client.post(f"/api/loans/applications/{app_id}/officer-review", headers=oh)
-    client.post(f"/api/loans/applications/{app_id}/recommend", headers=oh)
+    _workflow.recommend(client, app_id, oh)
     client.post(f"/api/loans/applications/{app_id}/admin-review", headers=ah)
     client.post(
         f"/api/loans/applications/{app_id}/decision", headers=ah, json={"decision": "approve"}

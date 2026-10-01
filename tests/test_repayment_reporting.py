@@ -17,6 +17,8 @@ from app.extensions import db
 from app.models import AuditLog, Document, RepaymentSchedule
 from app.models.enums import DocumentType
 
+import _workflow
+
 
 def _make_receipt(user):
     doc = Document(
@@ -38,7 +40,7 @@ def _disbursed_loan(client, make_user, auth_header, apply_payload):
     r = client.post("/api/loans/apply", headers=ch, json=apply_payload(amount_requested=500))
     app_id = r.get_json()["id"]
     client.post(f"/api/loans/applications/{app_id}/officer-review", headers=oh)
-    client.post(f"/api/loans/applications/{app_id}/recommend", headers=oh)
+    _workflow.recommend(client, app_id, oh)
     client.post(f"/api/loans/applications/{app_id}/admin-review", headers=ah)
     client.post(
         f"/api/loans/applications/{app_id}/decision", headers=ah, json={"decision": "approve"}
@@ -263,13 +265,13 @@ def test_close_loan_is_a_distinct_step_from_paid(client, make_user, auth_header,
     txn_id = r.get_json()["transaction"]["id"]
     client.post(f"/api/payments/{txn_id}/verify", headers=ah, json={"decision": "verified"})
 
-    # A loan_officer cannot close a loan that isn't PAID yet on some OTHER
-    # loan, but here it IS paid - a loan_officer CAN close it (see close_loan's
-    # role docstring); write-off is admin-only and requires active/overdue.
+    # Closing a PAID loan is admin-only (a loan_officer gets 403); write-off
+    # is admin-only too and requires active/overdue.
     r = client.post(f"/api/loans/{loan['id']}/write-off", headers=ah, json={"note": "n/a"})
     assert r.status_code == 409, "cannot write off an already-PAID loan"
 
-    r = client.post(f"/api/loans/{loan['id']}/close", headers=oh)
+    assert client.post(f"/api/loans/{loan['id']}/close", headers=oh).status_code == 403
+    r = client.post(f"/api/loans/{loan['id']}/close", headers=ah)
     assert r.status_code == 200, r.get_json()
     assert r.get_json()["status"] == "closed"
     assert r.get_json()["closure_reason"] == "paid_in_full"
@@ -328,7 +330,7 @@ def test_the_full_loop_is_captured_in_auditlog(client, make_user, auth_header, a
     )
     txn2_id = r.get_json()["transaction"]["id"]
     client.post(f"/api/payments/{txn2_id}/verify", headers=ah, json={"decision": "verified"})
-    client.post(f"/api/loans/{loan['id']}/close", headers=oh)
+    client.post(f"/api/loans/{loan['id']}/close", headers=ah)
 
     verified = AuditLog.query.filter_by(
         action="payment_verified", entity_type="PaymentTransaction", entity_id=str(txn2_id)
@@ -344,5 +346,5 @@ def test_the_full_loop_is_captured_in_auditlog(client, make_user, auth_header, a
         action="loan_closed", entity_type="Loan", entity_id=str(loan["id"])
     ).first()
     assert loan_closed is not None
-    assert loan_closed.actor_id == officer.id
+    assert loan_closed.actor_id == admin.id
     assert loan_closed.details["closure_reason"] == "paid_in_full"
