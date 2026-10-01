@@ -166,6 +166,11 @@ pricing_out = ns.model(
 schedule_item_out = ns.model(
     "RepaymentScheduleItem",
     {
+        # The actual row id - POST /payments/repay requires this exact value
+        # as repayment_schedule_id. Without it a customer/frontend has no way
+        # to identify which installment to pay (installment_number alone
+        # isn't the primary key and was never enough to call that endpoint).
+        "id": fields.Integer,
         "installment_number": fields.Integer,
         "due_date": fields.String,
         "amount_due": fields.Float,
@@ -360,6 +365,7 @@ def serialize_loan(loan: Loan) -> dict:
         ),
         "repayment_schedule": [
             {
+                "id": r.id,
                 "installment_number": r.installment_number,
                 "due_date": r.due_date.isoformat(),
                 "amount_due": _num(r.amount_due),
