@@ -28,6 +28,16 @@ class Document(db.Model):
         nullable=True,
         index=True,
     )
+    # Set when this document is a repayment receipt/screenshot attached to a
+    # specific reported payment (see app/services/payment_processing.py).
+    # A document has at most one "parent" - either this or
+    # loan_application_id, never both.
+    payment_transaction_id = db.Column(
+        db.Integer,
+        db.ForeignKey("payment_transactions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     document_type = db.Column(
         pg_enum(DocumentType, "document_type"), nullable=False
     )
@@ -37,12 +47,32 @@ class Document(db.Model):
     uploaded_at = db.Column(
         db.DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Versioning: when a customer re-uploads a document of the same type for
+    # the same application (e.g. responding to a CUSTOMER_ACTION_REQUIRED
+    # request), the OLD row is kept - never deleted or overwritten - and
+    # pointed at its replacement here. NULL means "current" (the latest
+    # version, or never superseded). See app/services/documents.py's
+    # supersede logic. ondelete SET NULL: if the newer document is ever
+    # removed, the older one reverts to being "current" again.
+    superseded_by_id = db.Column(
+        db.Integer,
+        db.ForeignKey("documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # ---------------------------------------------------------------- relationships
     user = db.relationship("User", back_populates="documents")
     loan_application = db.relationship(
         "LoanApplication", back_populates="documents"
     )
+    payment_transaction = db.relationship(
+        "PaymentTransaction", back_populates="documents"
+    )
+    superseded_by = db.relationship(
+        "Document", remote_side=[id], foreign_keys=[superseded_by_id]
+    )
 
     def __repr__(self) -> str:
-        return f"<Document {self.id} {self.document_type} user={self.user_id}>"
+        current = "current" if self.superseded_by_id is None else f"superseded by {self.superseded_by_id}"
+        return f"<Document {self.id} {self.document_type} user={self.user_id} ({current})>"

@@ -4,7 +4,11 @@ from datetime import date
 from decimal import Decimal
 
 from app.models import Loan
-from app.models.enums import LoanStatus, RepaymentStatus
+from app.models.enums import LoanClosureReason, LoanStatus, RepaymentStatus
+
+# "In progress" loans still owed on - ACTIVE and OVERDUE are both
+# outstanding, only differing in whether an installment is currently late.
+_IN_PROGRESS_STATUSES = (LoanStatus.ACTIVE, LoanStatus.OVERDUE)
 
 _CENTS = Decimal("0.01")
 
@@ -61,7 +65,7 @@ def get_account_summary(user_id: int) -> dict:
     loans = (
         Loan.query.filter_by(user_id=user_id).order_by(Loan.id.desc()).all()
     )
-    active = [l for l in loans if l.status == LoanStatus.ACTIVE]
+    active = [l for l in loans if l.status in _IN_PROGRESS_STATUSES]
 
     active_summaries = [_loan_progress(l) for l in active]
     next_repayment = None
@@ -72,9 +76,16 @@ def get_account_summary(user_id: int) -> dict:
     return {
         "user_id": user_id,
         "counts": {
-            "active": len(active),
-            "completed": sum(1 for l in loans if l.status == LoanStatus.COMPLETED),
-            "defaulted": sum(1 for l in loans if l.status == LoanStatus.DEFAULTED),
+            "active": sum(1 for l in loans if l.status == LoanStatus.ACTIVE),
+            "overdue": sum(1 for l in loans if l.status == LoanStatus.OVERDUE),
+            "paid": sum(1 for l in loans if l.status == LoanStatus.PAID),
+            "closed": sum(1 for l in loans if l.status == LoanStatus.CLOSED),
+            "defaulted": sum(
+                1
+                for l in loans
+                if l.status == LoanStatus.CLOSED
+                and l.closure_reason == LoanClosureReason.DEFAULTED
+            ),
             "total": len(loans),
         },
         "active_loans": active_summaries,

@@ -19,7 +19,7 @@ upload_parser = reqparse.RequestParser()
 upload_parser.add_argument("file", type=FileStorage, location="files", required=True,
                            help="PDF, JPG or PNG, max 10 MiB")
 upload_parser.add_argument("document_type", location="form", required=True,
-                           choices=("id_verification", "receipt", "loan_file"))
+                           choices=("id_verification", "receipt", "loan_file", "proof_of_income"))
 upload_parser.add_argument("loan_application_id", type=int, location="form", required=False)
 
 # --------------------------------------------------------------- response models
@@ -46,6 +46,12 @@ document_out = ns.model(
         "document_type": fields.String(example="id_verification"),
         "storage_path": fields.String(description="Supabase Storage object path (bytes never in Postgres)"),
         "uploaded_at": fields.String,
+        "is_current": fields.Boolean(
+            description="False if a later re-upload of the same type for the same application superseded this one."
+        ),
+        "superseded_by_id": fields.Integer(
+            description="Id of the document that superseded this one, if any."
+        ),
     },
 )
 document_list_out = ns.model(
@@ -115,13 +121,21 @@ class Documents(Resource):
             abort(exc.status_code, exc.message)
         return documents.serialize(document), 201
 
-    @ns.doc(security="Bearer", params={"document_type": "optional filter"})
-    @ns.response(200, "The authenticated member's documents", document_list_out)
+    @ns.doc(
+        security="Bearer",
+        params={
+            "document_type": "optional filter",
+            "include_superseded": "true to also include old, replaced versions (default: latest only)",
+        },
+    )
+    @ns.response(200, "The authenticated member's documents (latest version of each, by default)", document_list_out)
     @roles_required()
     def get(self):
         try:
             rows = documents.list_documents(
-                current_user_id(), document_type=request.args.get("document_type")
+                current_user_id(),
+                document_type=request.args.get("document_type"),
+                include_superseded=request.args.get("include_superseded", "").lower() == "true",
             )
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
@@ -144,15 +158,23 @@ class DocumentDownload(Resource):
 
 @ns.route("/<int:user_id>/documents")
 class MemberDocuments(Resource):
-    @ns.doc(security="Bearer", params={"document_type": "optional filter"})
-    @ns.response(200, "A member's documents (staff review)", member_document_list_out)
+    @ns.doc(
+        security="Bearer",
+        params={
+            "document_type": "optional filter",
+            "include_superseded": "true to also include old, replaced versions (default: latest only)",
+        },
+    )
+    @ns.response(200, "A member's documents (staff review) - latest version of each, by default", member_document_list_out)
     @roles_required(*_STAFF)
     def get(self, user_id: int):
         if db.session.get(User, user_id) is None:
             abort(404, "User not found.")
         try:
             rows = documents.list_documents(
-                user_id, document_type=request.args.get("document_type")
+                user_id,
+                document_type=request.args.get("document_type"),
+                include_superseded=request.args.get("include_superseded", "").lower() == "true",
             )
         except ServiceError as exc:
             abort(exc.status_code, exc.message)

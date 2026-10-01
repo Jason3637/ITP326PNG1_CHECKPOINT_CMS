@@ -228,7 +228,7 @@ def test_reminder_only_applies_to_active_loans(app, make_user):
     loan = _make_active_loan(user)
     row = loan.repayment_schedule[0]
     _bring_forward(row, days_from_now=1)
-    loan.status = LoanStatus.COMPLETED  # e.g. paid off through some other path
+    loan.status = LoanStatus.PAID  # e.g. paid off through some other path
     db.session.commit()
 
     results = repayments_scheduler.send_due_soon_reminders()

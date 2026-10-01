@@ -92,6 +92,12 @@ class Config:
     REPAYMENT_REMINDER_LEAD_DAYS = int(os.environ.get("REPAYMENT_REMINDER_LEAD_DAYS", "3"))
     # ISO currency code, for the frontend to format amounts (Prime's Vault is in PNG).
     CURRENCY_CODE = os.environ.get("CURRENCY_CODE", "PGK")
+    # --- PRIME product ------------------------------------------------------
+    # The terms/policy version a customer must acknowledge at submission
+    # (see LoanApplication's terms_acceptance and loan_processing.submit_application).
+    # Bump this when the policy document changes; old acceptances keep whatever
+    # version they were recorded against.
+    CURRENT_POLICY_VERSION = os.environ.get("CURRENT_POLICY_VERSION", "2026-09-v1")
 
     # --- CORS (separately-hosted Next.js frontend) ------------------------
     # Comma-separated list of allowed origins. Dev defaults cover the Next.js
@@ -135,6 +141,15 @@ class TestingConfig(Config):
         "poolclass": StaticPool,
         "connect_args": {"check_same_thread": False},
     }
+    # Blanked explicitly: Config.* otherwise falls back to whatever real
+    # values a local .env loaded into the process (load_dotenv() in
+    # app/__init__.py runs unconditionally). Without this, a test that
+    # reaches the storage layer would silently make a REAL Supabase Storage
+    # call instead of failing fast - any test needing the "success" path
+    # must mock app.services.documents.supabase_storage explicitly.
+    SUPABASE_URL = ""
+    SUPABASE_SERVICE_KEY = ""
+    SUPABASE_STORAGE_BUCKET = ""
     JWT_SECRET_KEY = "testing-only-not-a-real-secret-0123456789"
     MFA_ENCRYPTION_KEY = "ZVa21zYrbaUc1mZIHOQNMEUBYCw63cU504ux-rk9xXU="  # test-only Fernet key
     NOTIFICATIONS_ENABLED = False
