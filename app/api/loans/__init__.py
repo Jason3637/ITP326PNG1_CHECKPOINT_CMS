@@ -688,3 +688,43 @@ class MyLoans(Resource):
     def get(self):
         rows = Loan.query.filter_by(user_id=current_user_id()).order_by(Loan.id.desc()).all()
         return {"count": len(rows), "loans": [serialize_loan(l) for l in rows]}
+
+
+# --------------------------------------------------------------------- 6. closure
+def _get_loan(loan_id: int) -> Loan:
+    loan = db.session.get(Loan, loan_id)
+    if loan is None:
+        abort(404, f"Loan #{loan_id} not found.")
+    return loan
+
+
+@ns.route("/<int:loan_id>/close")
+class CloseLoan(Resource):
+    @ns.doc(security="Bearer")
+    @ns.response(200, "PAID -> CLOSED (closure_reason=paid_in_full)", loan_out)
+    @ns.response(409, "Loan is not PAID", error_out)
+    @roles_required("loan_officer", "admin")
+    def post(self, loan_id: int):
+        loan = _get_loan(loan_id)
+        try:
+            result = loan_processing.close_loan(loan, _current_user())
+        except ServiceError as exc:
+            abort(exc.status_code, exc.message)
+        return serialize_loan(result)
+
+
+@ns.route("/<int:loan_id>/write-off")
+class WriteOffLoan(Resource):
+    @ns.doc(security="Bearer")
+    @ns.expect(note_in)
+    @ns.response(200, "ACTIVE/OVERDUE -> CLOSED (closure_reason=defaulted)", loan_out)
+    @ns.response(409, "Loan is not active/overdue", error_out)
+    @roles_required("admin")
+    def post(self, loan_id: int):
+        loan = _get_loan(loan_id)
+        data = request.get_json(silent=True) or {}
+        try:
+            result = loan_processing.write_off_loan(loan, _current_user(), data.get("note"))
+        except ServiceError as exc:
+            abort(exc.status_code, exc.message)
+        return serialize_loan(result)
