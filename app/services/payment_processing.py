@@ -52,6 +52,10 @@ def record_payment(
     POST /users/documents pattern - upload first, unlinked, then reference
     the id here) linked to this transaction.
     """
+    try:
+        repayment_schedule_id = int(repayment_schedule_id)
+    except (TypeError, ValueError):
+        raise ServiceError("repayment_schedule_id is required and must be an integer.")
     schedule = db.session.get(RepaymentSchedule, repayment_schedule_id)
     if schedule is None:
         raise ServiceError("Repayment schedule row not found.", 404)

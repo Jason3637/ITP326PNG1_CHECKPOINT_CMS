@@ -925,12 +925,14 @@ def resume_officer_review(
                 "reason is required - resuming cancels the customer's open requests."
             )
         now = datetime.now(timezone.utc)
-        for r in open_information_requests(application):
-            r.status = InformationRequestStatus.CANCELLED
-            r.cancelled_by = officer.id
-            r.cancelled_at = now
-            r.cancel_reason = reason
-            cancelled.append(r.id)
+        officer_id = officer.id  # read before the rows change (CHECK ties status to cancelled_*)
+        with db.session.no_autoflush:
+            for r in open_information_requests(application):
+                r.status = InformationRequestStatus.CANCELLED
+                r.cancelled_by = officer_id
+                r.cancelled_at = now
+                r.cancel_reason = reason
+                cancelled.append(r.id)
 
     return _transition(
         application,

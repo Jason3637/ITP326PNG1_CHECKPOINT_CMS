@@ -149,18 +149,23 @@ def update_item(
     if note and len(note) > 1000:
         raise ServiceError("note must be at most 1000 characters.")
 
+    actor_id = actor.id  # read BEFORE touching the row - see below
     ensure_checklist(application)
     item = next(i for i in application.verification_items if i.item_type == item_type)
     old = {"status": str(item.status), "note": item.note}
 
-    item.status = new_status
-    item.note = note
-    if new_status == VerificationItemStatus.PENDING:
-        item.checked_by = None
-        item.checked_at = None
-    else:
-        item.checked_by = actor.id
-        item.checked_at = datetime.now(timezone.utc)
+    # All four fields change together: the row's CHECK constraint ties
+    # status to checked_by/checked_at, so no flush may see them half-set
+    # (e.g. an autoflush triggered by lazily loading an expired attribute).
+    with db.session.no_autoflush:
+        item.status = new_status
+        item.note = note
+        if new_status == VerificationItemStatus.PENDING:
+            item.checked_by = None
+            item.checked_at = None
+        else:
+            item.checked_by = actor_id
+            item.checked_at = datetime.now(timezone.utc)
 
     audit.record(
         "verification_item_updated",

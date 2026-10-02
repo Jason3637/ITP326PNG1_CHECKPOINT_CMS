@@ -48,6 +48,9 @@ def roles_required(*roles: str):
                 abort(403, f"Requires role: {' or '.join(roles)}.")
             return fn(*args, **kwargs)
 
+        # Introspectable, so tests can check every route against the RBAC
+        # matrix (tests/test_rbac_matrix.py). Empty = any authenticated user.
+        wrapper.required_roles = frozenset(roles)
         return wrapper
 
     return decorator
