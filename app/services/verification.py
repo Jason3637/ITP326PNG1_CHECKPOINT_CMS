@@ -168,6 +168,7 @@ def update_item(
         entity_type="LoanApplication",
         entity_id=application.id,
         details={
+            "verification_item_id": item.id,
             "item_type": item_type,
             "from": old,
             "to": {"status": new_status.value, "note": note},

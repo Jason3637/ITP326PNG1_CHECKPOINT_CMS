@@ -18,6 +18,10 @@ class AuditLog(db.Model):
         nullable=True,
         index=True,
     )
+    # The actor's role AT THE TIME of the action (roles can change later).
+    # Filled in by app.services.audit.record(); NULL for system actions and
+    # for rows written before this column existed.
+    actor_role = db.Column(db.String(20), index=True)
     action = db.Column(db.String(100), nullable=False)
     entity_type = db.Column(db.String(100), nullable=False)
     # String so it can reference any table's PK regardless of type; nullable for
