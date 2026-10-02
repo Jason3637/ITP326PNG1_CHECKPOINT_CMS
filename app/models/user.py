@@ -75,6 +75,13 @@ class User(db.Model):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    customer_verifications = db.relationship(
+        "CustomerVerification",
+        back_populates="user",
+        foreign_keys="CustomerVerification.user_id",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     audit_logs = db.relationship(
         "AuditLog",
         back_populates="actor",

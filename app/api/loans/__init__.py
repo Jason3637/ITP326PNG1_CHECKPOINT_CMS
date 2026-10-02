@@ -1,5 +1,14 @@
 """Loans namespace - PRIME application intake, two-tier officer/admin review,
 and disbursement.
+
+Two serializations of an application:
+  * customer view (apply, /applications/mine, respond) - never includes the
+    credit assessment, staff identities or officers' internal notes;
+  * staff view (every loan_officer/admin endpoint) - adds assignment, the
+    full information-request history and the advisory credit assessment.
+
+The Loan Officer workspace read endpoints (queues, review screen, checklist,
+customer history) live in the `officer` namespace (app/api/officer).
 """
 
 from decimal import Decimal
@@ -10,7 +19,7 @@ from flask_restx import Namespace, Resource, abort, fields
 from app.api.auth.decorators import current_user_id, roles_required
 from app.extensions import db
 from app.models import Loan, LoanApplication, User
-from app.services import loan_processing, prime_pricing
+from app.services import loan_processing, officer_views, prime_pricing
 from app.services.errors import ServiceError
 
 ns = Namespace("loans", description="PRIME loan applications, review, and disbursement.")
@@ -29,6 +38,11 @@ _PURPOSE_CATEGORIES = [
     "business", "school_fees", "medical", "home_improvement", "debt_consolidation", "other",
 ]
 _DISBURSEMENT_METHODS = ["bsp_mobile_banking", "cash_on_hand"]
+_REQUEST_TYPES = [
+    "missing_document", "document_unclear", "document_expired", "information_mismatch",
+    "referee_unreachable", "employment_confirmation", "other",
+]
+_DOCUMENT_TYPES = ["id_verification", "receipt", "loan_file", "proof_of_income"]
 
 # Personal details: pre-filled by the frontend from GET /users/profile, shown
 # back to the customer for review, and submitted alongside the application as
@@ -96,11 +110,50 @@ apply_in = ns.model(
         ),
     },
 )
+information_request_in = ns.model(
+    "InformationRequestInput",
+    {
+        "request_type": fields.String(required=True, enum=_REQUEST_TYPES, example="missing_document"),
+        "reason": fields.String(
+            required=True,
+            example="Please upload a payslip from the last 3 months.",
+            description="Customer-facing: what is needed and why (max 1000).",
+        ),
+        "required_document_type": fields.String(required=False, enum=_DOCUMENT_TYPES),
+        "required_information": fields.String(
+            required=False, example="Employer's name and phone number", description="Max 500."
+        ),
+        "internal_note": fields.String(
+            required=False,
+            example="Payslip on file looks edited.",
+            description="Staff-only, never shown to the customer (max 1000).",
+        ),
+    },
+)
+request_action_in = ns.model(
+    "RequestMoreInformationInput",
+    {
+        "requests": fields.List(
+            fields.Nested(information_request_in),
+            required=True,
+            description="1-10 items. Each becomes its own InformationRequest the customer must answer.",
+        )
+    },
+)
+response_item_in = ns.model(
+    "InformationResponseInput",
+    {
+        "information_request_id": fields.Integer(required=True, example=12),
+        "response_note": fields.String(required=True, example="Uploaded my September payslip."),
+    },
+)
 respond_in = ns.model(
     "RespondToActionInput",
     {
-        "response_note": fields.String(
-            required=True, example="Added the requested second referee and updated my employer."
+        "responses": fields.List(
+            fields.Nested(response_item_in),
+            required=True,
+            description="Exactly one entry per OPEN request on the application.",
         ),
         "purpose_category": fields.String(required=False, enum=_PURPOSE_CATEGORIES),
         "purpose": fields.String(required=False),
@@ -124,24 +177,42 @@ respond_in = ns.model(
         ),
     },
 )
+resume_in = ns.model(
+    "ResumeReviewInput",
+    {
+        "reason": fields.String(
+            required=False,
+            example="Customer confirmed by phone; no upload needed.",
+            description="Required when resuming from customer_action_required (cancels the open requests).",
+        )
+    },
+)
+recommend_in = ns.model(
+    "RecommendationInput",
+    {
+        "recommendation": fields.String(
+            required=True, enum=["recommend_approval", "recommend_rejection"], example="recommend_approval"
+        ),
+        "comments": fields.String(required=True, example="ID, employer and referee all confirmed."),
+    },
+)
+assign_in = ns.model("AssignInput", {"officer_id": fields.Integer(required=True, example=7)})
+reason_in = ns.model(
+    "ReasonInput",
+    {"reason": fields.String(required=True, example="Please re-check the referee's employer.")},
+)
 decision_in = ns.model(
     "LoanDecisionInput",
     {
         "decision": fields.String(required=True, enum=["approve", "reject"], example="approve"),
-        "note": fields.String(required=False, example="Approved at standard PRIME terms."),
+        "note": fields.String(
+            required=False,
+            example="Approved at standard PRIME terms.",
+            description="Required when the decision goes against the officer's recommendation.",
+        ),
     },
 )
 note_in = ns.model("NoteInput", {"note": fields.String(required=False)})
-customer_action_in = ns.model(
-    "CustomerActionInput",
-    {
-        "note": fields.String(
-            required=True,
-            example="Please add a second referee and confirm your employer's name.",
-            description="Shown to the customer - what's missing / what to do.",
-        )
-    },
-)
 disburse_in = ns.model(
     "DisburseInput",
     {
@@ -188,6 +259,41 @@ referee_out = ns.model(
         "employer_name": fields.String,
     },
 )
+information_response_out = ns.model(
+    "InformationResponse",
+    {
+        "id": fields.Integer,
+        "response_note": fields.String,
+        "responded_at": fields.String,
+        "field_changes": fields.Raw(description='{"field": {"old": ..., "new": ...}} - only changed fields'),
+        "provided_document_ids": fields.List(fields.Integer),
+    },
+)
+information_request_out = ns.model(
+    "InformationRequest",
+    {
+        "id": fields.Integer,
+        "request_type": fields.String(example="missing_document"),
+        "reason": fields.String,
+        "required_document_type": fields.String,
+        "required_information": fields.String,
+        "status": fields.String(example="open", description="open | responded | cancelled"),
+        "requested_at": fields.String,
+        "cancelled_at": fields.String,
+        "response": fields.Nested(information_response_out, allow_null=True),
+    },
+)
+information_request_staff_out = ns.inherit(
+    "InformationRequestStaff",
+    information_request_out,
+    {
+        "internal_note": fields.String(description="Staff-only."),
+        "requested_by": fields.Integer,
+        "requested_by_name": fields.String,
+        "cancelled_by": fields.Integer,
+        "cancel_reason": fields.String,
+    },
+)
 application_out = ns.model(
     "LoanApplication",
     {
@@ -216,15 +322,39 @@ application_out = ns.model(
             description="Customer-facing label - internal staff-routing statuses collapse to one friendly label.",
         ),
         "action_required_note": fields.String(
-            description="What the officer needs from the customer - set while status is customer_action_required."
+            description=(
+                "Back-compat summary: the open requests' reasons, one per line. "
+                "Use information_requests for the structured version."
+            )
         ),
-        "credit_evaluation_result": fields.Raw(
-            description="Advisory only - see app/services/credit_evaluation.py. Never sets status."
+        "information_requests": fields.List(
+            fields.Nested(information_request_out),
+            description="Every Request More Information round, oldest first (customer view).",
         ),
         "submitted_at": fields.String,
         "decided_at": fields.String,
         "decided_by": fields.Integer,
         "loan_id": fields.Integer,
+    },
+)
+credit_assessment_out = ns.model(
+    "CreditAssessment",
+    {
+        "label": fields.String(example=officer_views.CREDIT_ASSESSMENT_LABEL),
+        "advisory": fields.Boolean(example=True),
+        "affects_status": fields.Boolean(example=False),
+        "result": fields.Raw(description="Interim credit model output (score, reasons, ...). Never sets status."),
+    },
+)
+application_staff_out = ns.inherit(
+    "LoanApplicationStaff",
+    application_out,
+    {
+        "assigned_officer_id": fields.Integer,
+        "assigned_officer_name": fields.String,
+        "assigned_at": fields.String,
+        "information_requests": fields.List(fields.Nested(information_request_staff_out)),
+        "credit_assessment": fields.Nested(credit_assessment_out),
     },
 )
 disbursement_out = ns.model(
@@ -257,16 +387,55 @@ loan_out = ns.model(
 )
 application_list_out = ns.model(
     "LoanApplicationList",
+    {"count": fields.Integer, "applications": fields.List(fields.Nested(application_staff_out))},
+)
+my_application_list_out = ns.model(
+    "MyLoanApplicationList",
     {"count": fields.Integer, "applications": fields.List(fields.Nested(application_out))},
+)
+recommendation_out = ns.model(
+    "OfficerRecommendation",
+    {
+        "id": fields.Integer,
+        "officer_id": fields.Integer,
+        "officer_name": fields.String,
+        "recommendation": fields.String(example="recommend_approval"),
+        "comments": fields.String,
+        "checklist_snapshot": fields.Raw(description="Frozen checklist items at the time of recommending."),
+        "credit_evaluation_snapshot": fields.Raw(description="Advisory credit result the officer saw."),
+        "customer_verification_id": fields.Integer,
+        "created_at": fields.String,
+    },
+)
+recommend_out = ns.model(
+    "RecommendationResult",
+    {
+        "application": fields.Nested(application_staff_out),
+        "recommendation": fields.Nested(recommendation_out),
+    },
+)
+admin_return_out = ns.model(
+    "AdminReturn",
+    {
+        "id": fields.Integer,
+        "recommendation_id": fields.Integer,
+        "returned_by": fields.Integer,
+        "reason": fields.String,
+        "created_at": fields.String,
+    },
+)
+return_out = ns.model(
+    "ReturnToOfficerResult",
+    {"application": fields.Nested(application_staff_out), "admin_return": fields.Nested(admin_return_out)},
 )
 decision_out = ns.model(
     "LoanDecisionResult",
-    {"application": fields.Nested(application_out)},
+    {"application": fields.Nested(application_staff_out)},
 )
 disburse_out = ns.model(
     "DisburseResult",
     {
-        "application": fields.Nested(application_out),
+        "application": fields.Nested(application_staff_out),
         "loan": fields.Nested(loan_out),
     },
 )
@@ -282,6 +451,7 @@ def _num(value):
 
 
 def serialize_application(a: LoanApplication) -> dict:
+    """Customer view. See the module docstring for what it leaves out."""
     pricing = None
     try:
         pricing = prime_pricing.calculate_prime(a.amount_requested)
@@ -330,13 +500,35 @@ def serialize_application(a: LoanApplication) -> dict:
         ),
         "status": str(a.status),
         "status_label": loan_processing.status_label(a.status),
-        "action_required_note": a.action_required_note,
-        "credit_evaluation_result": a.credit_evaluation_result,
+        "action_required_note": loan_processing.action_required_text(a),
+        "information_requests": [
+            loan_processing.serialize_information_request(r, staff=False)
+            for r in a.information_requests
+        ],
         "submitted_at": a.submitted_at.isoformat() if a.submitted_at else None,
         "decided_at": a.decided_at.isoformat() if a.decided_at else None,
         "decided_by": a.decided_by,
         "loan_id": a.loan.id if a.loan else None,
     }
+
+
+def serialize_application_staff(a: LoanApplication) -> dict:
+    """Staff view: customer view + assignment, staff request fields, and the
+    advisory credit assessment (labelled as such)."""
+    data = serialize_application(a)
+    data.update(
+        {
+            "assigned_officer_id": a.assigned_officer_id,
+            "assigned_officer_name": a.assigned_officer.full_name if a.assigned_officer else None,
+            "assigned_at": a.assigned_at.isoformat() if a.assigned_at else None,
+            "information_requests": [
+                loan_processing.serialize_information_request(r, staff=True)
+                for r in a.information_requests
+            ],
+            "credit_assessment": officer_views.credit_assessment(a),
+        }
+    )
+    return data
 
 
 def serialize_loan(loan: Loan) -> dict:
@@ -391,6 +583,10 @@ def _get_application(application_id: int) -> LoanApplication:
     return application
 
 
+def _body() -> dict:
+    return request.get_json(silent=True) or {}
+
+
 # --------------------------------------------------------------------- 1. apply
 @ns.route("/apply")
 class LoanApply(Resource):
@@ -401,7 +597,7 @@ class LoanApply(Resource):
     @ns.response(409, "You already have an open application", error_out)
     @roles_required("customer")
     def post(self):
-        data = request.get_json(silent=True) or {}
+        data = _body()
         try:
             application = loan_processing.submit_application(
                 _current_user(),
@@ -465,7 +661,13 @@ class PrimePreview(Resource):
 # ------------------------------------------------------------- 2. list for review
 @ns.route("/applications")
 class LoanApplications(Resource):
-    @ns.doc(security="Bearer", params={"status": "Filter by exact status (default: open applications only)"})
+    @ns.doc(
+        security="Bearer",
+        params={
+            "status": "Filter by exact status (default: open applications only). "
+            "For the officer dashboard queues use GET /officer/queues/<queue>."
+        },
+    )
     @ns.response(200, "List of applications", application_list_out)
     @roles_required("loan_officer", "admin")
     def get(self):
@@ -473,13 +675,13 @@ class LoanApplications(Resource):
             rows = loan_processing.list_applications(status=request.args.get("status"))
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
-        return {"count": len(rows), "applications": [serialize_application(a) for a in rows]}
+        return {"count": len(rows), "applications": [serialize_application_staff(a) for a in rows]}
 
 
 @ns.route("/applications/mine")
 class MyApplications(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "The authenticated customer's own applications (open and past)", application_list_out)
+    @ns.response(200, "The authenticated customer's own applications (open and past)", my_application_list_out)
     @roles_required("customer")
     def get(self):
         rows = loan_processing.list_my_applications(_current_user())
@@ -490,8 +692,8 @@ class MyApplications(Resource):
 @ns.route("/applications/<int:application_id>/officer-review")
 class StartOfficerReview(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "SUBMITTED -> OFFICER_REVIEW", application_out)
-    @ns.response(409, "Application is not in the expected status", error_out)
+    @ns.response(200, "SUBMITTED -> OFFICER_REVIEW; claims it (assigned_officer_id = caller)", application_staff_out)
+    @ns.response(409, "Application is not SUBMITTED (already claimed)", error_out)
     @roles_required("loan_officer", "admin")
     def post(self, application_id: int):
         application = _get_application(application_id)
@@ -499,44 +701,74 @@ class StartOfficerReview(Resource):
             result = loan_processing.start_officer_review(application, _current_user())
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
-        return serialize_application(result)
+        return serialize_application_staff(result)
+
+
+@ns.route("/applications/<int:application_id>/assign")
+class AssignApplication(Resource):
+    @ns.doc(security="Bearer")
+    @ns.expect(assign_in)
+    @ns.response(200, "Assigned to the given loan_officer/admin", application_staff_out)
+    @ns.response(400, "officer_id is not a staff account", error_out)
+    @ns.response(409, "Application is not open", error_out)
+    @roles_required("admin")
+    def post(self, application_id: int):
+        application = _get_application(application_id)
+        try:
+            result = loan_processing.assign_application(
+                application, _current_user(), _body().get("officer_id")
+            )
+        except ServiceError as exc:
+            abort(exc.status_code, exc.message)
+        return serialize_application_staff(result)
 
 
 @ns.route("/applications/<int:application_id>/request-action")
 class RequestCustomerAction(Resource):
     @ns.doc(security="Bearer")
-    @ns.expect(customer_action_in)
-    @ns.response(200, "OFFICER_REVIEW -> CUSTOMER_ACTION_REQUIRED", application_out)
-    @ns.response(409, "Application is not in the expected status", error_out)
+    @ns.expect(request_action_in)
+    @ns.response(
+        200,
+        "OFFICER_REVIEW -> CUSTOMER_ACTION_REQUIRED; one InformationRequest per item",
+        application_staff_out,
+    )
+    @ns.response(400, "Invalid request item", error_out)
+    @ns.response(403, "Assigned to another officer", error_out)
+    @ns.response(409, "Application is not in OFFICER_REVIEW", error_out)
     @roles_required("loan_officer", "admin")
     def post(self, application_id: int):
         application = _get_application(application_id)
-        data = request.get_json(silent=True) or {}
         try:
-            result = loan_processing.request_customer_action(
-                application, _current_user(), data.get("note")
+            loan_processing.request_customer_action(
+                application, _current_user(), _body().get("requests")
             )
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
-        return serialize_application(result)
+        return serialize_application_staff(application)
 
 
 @ns.route("/applications/<int:application_id>/respond")
 class RespondToCustomerAction(Resource):
     @ns.doc(security="Bearer")
     @ns.expect(respond_in)
-    @ns.response(200, "CUSTOMER_ACTION_REQUIRED -> OFFICER_REVIEW (updates the SAME application)", application_out)
+    @ns.response(
+        200,
+        "CUSTOMER_ACTION_REQUIRED -> OFFICER_REVIEW (updates the SAME application; "
+        "one InformationResponse per answered request)",
+        application_out,
+    )
+    @ns.response(400, "An open request is unanswered, or a field is invalid", error_out)
     @ns.response(403, "Not your application", error_out)
-    @ns.response(409, "Application is not in CUSTOMER_ACTION_REQUIRED", error_out)
+    @ns.response(409, "Not in CUSTOMER_ACTION_REQUIRED, or answers a request that isn't open", error_out)
     @roles_required("customer")
     def post(self, application_id: int):
         application = _get_application(application_id)
-        data = request.get_json(silent=True) or {}
+        data = _body()
         try:
             result = loan_processing.respond_to_customer_action(
                 application,
                 _current_user(),
-                response_note=data.get("response_note"),
+                responses=data.get("responses"),
                 purpose_category=data.get("purpose_category"),
                 purpose=data.get("purpose"),
                 confirmed_full_name=data.get("confirmed_full_name"),
@@ -558,41 +790,63 @@ class RespondToCustomerAction(Resource):
 @ns.route("/applications/<int:application_id>/resume-review")
 class ResumeOfficerReview(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "CUSTOMER_ACTION_REQUIRED -> OFFICER_REVIEW", application_out)
+    @ns.expect(resume_in)
+    @ns.response(
+        200,
+        "CUSTOMER_ACTION_REQUIRED (open requests cancelled) or RETURNED_TO_OFFICER -> OFFICER_REVIEW",
+        application_staff_out,
+    )
+    @ns.response(400, "reason missing when cancelling open requests", error_out)
+    @ns.response(403, "Assigned to another officer", error_out)
     @ns.response(409, "Application is not in the expected status", error_out)
     @roles_required("loan_officer", "admin")
     def post(self, application_id: int):
         application = _get_application(application_id)
         try:
-            result = loan_processing.resume_officer_review(application, _current_user())
-        except ServiceError as exc:
-            abort(exc.status_code, exc.message)
-        return serialize_application(result)
-
-
-@ns.route("/applications/<int:application_id>/recommend")
-class RecommendForApproval(Resource):
-    @ns.doc(security="Bearer")
-    @ns.expect(note_in)
-    @ns.response(200, "OFFICER_REVIEW -> RECOMMENDED_FOR_APPROVAL", application_out)
-    @ns.response(409, "Application is not in the expected status", error_out)
-    @roles_required("loan_officer", "admin")
-    def post(self, application_id: int):
-        application = _get_application(application_id)
-        data = request.get_json(silent=True) or {}
-        try:
-            result = loan_processing.recommend_for_approval(
-                application, _current_user(), data.get("note")
+            result = loan_processing.resume_officer_review(
+                application, _current_user(), _body().get("reason")
             )
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
-        return serialize_application(result)
+        return serialize_application_staff(result)
+
+
+@ns.route("/applications/<int:application_id>/recommend")
+class Recommend(Resource):
+    @ns.doc(security="Bearer")
+    @ns.expect(recommend_in)
+    @ns.response(
+        200,
+        "OFFICER_REVIEW -> RECOMMENDED_FOR_APPROVAL / RECOMMENDED_FOR_REJECTION. "
+        "Records the recommendation only - creates no loan, touches no disbursement.",
+        recommend_out,
+    )
+    @ns.response(400, "Missing comments / unknown recommendation", error_out)
+    @ns.response(403, "Assigned to another officer", error_out)
+    @ns.response(409, "Not in OFFICER_REVIEW, or checklist incomplete for an approval", error_out)
+    @roles_required("loan_officer", "admin")
+    def post(self, application_id: int):
+        application = _get_application(application_id)
+        data = _body()
+        try:
+            rec = loan_processing.submit_recommendation(
+                application,
+                _current_user(),
+                recommendation=data.get("recommendation"),
+                comments=data.get("comments"),
+            )
+        except ServiceError as exc:
+            abort(exc.status_code, exc.message)
+        return {
+            "application": serialize_application_staff(application),
+            "recommendation": officer_views.serialize_recommendation(rec),
+        }
 
 
 @ns.route("/applications/<int:application_id>/admin-review")
 class StartAdminReview(Resource):
     @ns.doc(security="Bearer")
-    @ns.response(200, "RECOMMENDED_FOR_APPROVAL -> ADMIN_REVIEW", application_out)
+    @ns.response(200, "RECOMMENDED_FOR_APPROVAL / _REJECTION -> ADMIN_REVIEW", application_staff_out)
     @ns.response(409, "Application is not in the expected status", error_out)
     @roles_required("admin")
     def post(self, application_id: int):
@@ -601,26 +855,55 @@ class StartAdminReview(Resource):
             result = loan_processing.start_admin_review(application, _current_user())
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
-        return serialize_application(result)
+        return serialize_application_staff(result)
+
+
+@ns.route("/applications/<int:application_id>/return-to-officer")
+class ReturnToOfficer(Resource):
+    @ns.doc(security="Bearer")
+    @ns.expect(reason_in)
+    @ns.response(
+        200, "RECOMMENDED_FOR_* / ADMIN_REVIEW -> RETURNED_TO_OFFICER (AdminReturn recorded)", return_out
+    )
+    @ns.response(400, "reason is required", error_out)
+    @ns.response(409, "Application is not recommended / in admin review", error_out)
+    @roles_required("admin")
+    def post(self, application_id: int):
+        application = _get_application(application_id)
+        try:
+            returned = loan_processing.return_to_officer(
+                application, _current_user(), _body().get("reason")
+            )
+        except ServiceError as exc:
+            abort(exc.status_code, exc.message)
+        return {
+            "application": serialize_application_staff(application),
+            "admin_return": {
+                "id": returned.id,
+                "recommendation_id": returned.officer_recommendation_id,
+                "returned_by": returned.returned_by,
+                "reason": returned.reason,
+                "created_at": returned.created_at.isoformat() if returned.created_at else None,
+            },
+        }
 
 
 @ns.route("/applications/<int:application_id>/reject")
 class RejectApplication(Resource):
     @ns.doc(security="Bearer")
     @ns.expect(note_in)
-    @ns.response(200, "Any open status -> REJECTED (early exit)", application_out)
+    @ns.response(200, "Any open status -> REJECTED (admin early exit)", application_staff_out)
     @ns.response(409, "Application is already decided", error_out)
-    @roles_required("loan_officer", "admin")
+    @roles_required("admin")
     def post(self, application_id: int):
         application = _get_application(application_id)
-        data = request.get_json(silent=True) or {}
         try:
             result = loan_processing.reject_application(
-                application, _current_user(), data.get("note")
+                application, _current_user(), _body().get("note")
             )
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
-        return serialize_application(result)
+        return serialize_application_staff(result)
 
 
 # ---------------------------------------------------------------- 4. decision
@@ -629,12 +912,13 @@ class LoanApplicationDecision(Resource):
     @ns.doc(security="Bearer")
     @ns.expect(decision_in)
     @ns.response(200, "ADMIN_REVIEW -> APPROVED (then AWAITING_DISBURSEMENT) or REJECTED", decision_out)
+    @ns.response(400, "Invalid decision, or a note is missing when overriding the recommendation", error_out)
     @ns.response(409, "Application is not in ADMIN_REVIEW", error_out)
     @roles_required("admin")
     def post(self, application_id: int):
         application = _get_application(application_id)
 
-        data = request.get_json(silent=True) or {}
+        data = _body()
         decision = (data.get("decision") or "").strip().lower()
         if decision not in {"approve", "reject"}:
             abort(400, "decision must be 'approve' or 'reject'.")
@@ -649,7 +933,7 @@ class LoanApplicationDecision(Resource):
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
 
-        return {"application": serialize_application(application)}
+        return {"application": serialize_application_staff(application)}
 
 
 # ------------------------------------------------------------ 5. disbursement
@@ -662,7 +946,7 @@ class DisburseApplication(Resource):
     @roles_required("admin")
     def post(self, application_id: int):
         application = _get_application(application_id)
-        data = request.get_json(silent=True) or {}
+        data = _body()
         method = data.get("method")
         if not method:
             abort(400, "method is required.")
@@ -676,7 +960,7 @@ class DisburseApplication(Resource):
             )
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
-        return {"application": serialize_application(application), "loan": serialize_loan(loan)}
+        return {"application": serialize_application_staff(application), "loan": serialize_loan(loan)}
 
 
 # ------------------------------------------------------------------- my loans
@@ -703,7 +987,7 @@ class CloseLoan(Resource):
     @ns.doc(security="Bearer")
     @ns.response(200, "PAID -> CLOSED (closure_reason=paid_in_full)", loan_out)
     @ns.response(409, "Loan is not PAID", error_out)
-    @roles_required("loan_officer", "admin")
+    @roles_required("admin")
     def post(self, loan_id: int):
         loan = _get_loan(loan_id)
         try:
@@ -722,9 +1006,8 @@ class WriteOffLoan(Resource):
     @roles_required("admin")
     def post(self, loan_id: int):
         loan = _get_loan(loan_id)
-        data = request.get_json(silent=True) or {}
         try:
-            result = loan_processing.write_off_loan(loan, _current_user(), data.get("note"))
+            result = loan_processing.write_off_loan(loan, _current_user(), _body().get("note"))
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
         return serialize_loan(result)

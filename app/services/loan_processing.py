@@ -4,37 +4,62 @@ disbursement, and loan closure.
 State machine (see app/models/enums.py:LoanApplicationStatus for the full
 docstring on the old->new status mapping):
 
-    SUBMITTED --officer--> OFFICER_REVIEW
-    OFFICER_REVIEW --officer--> CUSTOMER_ACTION_REQUIRED
-    CUSTOMER_ACTION_REQUIRED --officer--> OFFICER_REVIEW
-    OFFICER_REVIEW --officer--> RECOMMENDED_FOR_APPROVAL
-    RECOMMENDED_FOR_APPROVAL --admin--> ADMIN_REVIEW
+    SUBMITTED --officer claims--> OFFICER_REVIEW   (sets assigned_officer_id)
+    OFFICER_REVIEW --assigned officer--> CUSTOMER_ACTION_REQUIRED   (InformationRequest rows)
+    CUSTOMER_ACTION_REQUIRED --customer responds--> OFFICER_REVIEW  (InformationResponse rows)
+    CUSTOMER_ACTION_REQUIRED --assigned officer resumes--> OFFICER_REVIEW (open requests cancelled)
+    OFFICER_REVIEW --assigned officer--> RECOMMENDED_FOR_APPROVAL | RECOMMENDED_FOR_REJECTION
+                                         (OfficerRecommendation row; never creates a Loan)
+    RECOMMENDED_FOR_* --admin--> ADMIN_REVIEW
+    RECOMMENDED_FOR_* | ADMIN_REVIEW --admin--> RETURNED_TO_OFFICER   (AdminReturn row)
+    RETURNED_TO_OFFICER --assigned officer resumes--> OFFICER_REVIEW
     ADMIN_REVIEW --admin--> APPROVED --(same call)--> AWAITING_DISBURSEMENT
     ADMIN_REVIEW --admin--> REJECTED
-    {OFFICER_REVIEW, CUSTOMER_ACTION_REQUIRED, RECOMMENDED_FOR_APPROVAL,
-     ADMIN_REVIEW} --officer or admin, early exit--> REJECTED
+    any open status --admin, early exit--> REJECTED
     AWAITING_DISBURSEMENT --admin, disburse_application()--> (Loan created, ACTIVE)
 
-Role checks are enforced at the API layer (roles_required); each function
-below documents which role it expects, same convention as the rest of this
-service layer.
+A loan officer can never reject, decide, disburse, close or write off: those
+are admin-only, enforced at the API layer (roles_required) AND re-checked
+here (_require_admin) so a future caller that skips the route can't bypass
+it. Officer actions on a claimed application are limited to the officer who
+claimed it, or an admin (_require_assignee). An admin may also act in the
+officer role, but each action stays a separate, separately audited call -
+nothing here combines "recommend" and "decide".
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
-from app.models import Disbursement, Loan, LoanApplication, Referee, TermsAcceptance
+from app.models import (
+    AdminReturn,
+    CustomerVerification,
+    Disbursement,
+    InformationRequest,
+    InformationResponse,
+    Loan,
+    LoanApplication,
+    OfficerRecommendation,
+    Referee,
+    TermsAcceptance,
+    User,
+)
 from app.models.enums import (
+    CustomerVerificationStatus,
     DisbursementMethod,
+    DocumentType,
     EmploymentStatus,
+    InformationRequestStatus,
+    InformationRequestType,
     LoanApplicationStatus,
     LoanClosureReason,
     LoanPurposeCategory,
     LoanStatus,
+    OfficerRecommendationType,
+    UserRole,
 )
 
-from . import audit, credit_evaluation, documents, notifications, prime_pricing
+from . import audit, credit_evaluation, documents, notifications, prime_pricing, verification
 from .errors import ServiceError
 
 _OPEN_APPLICATION_STATUSES = (
@@ -42,22 +67,39 @@ _OPEN_APPLICATION_STATUSES = (
     LoanApplicationStatus.OFFICER_REVIEW,
     LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED,
     LoanApplicationStatus.RECOMMENDED_FOR_APPROVAL,
+    LoanApplicationStatus.RECOMMENDED_FOR_REJECTION,
     LoanApplicationStatus.ADMIN_REVIEW,
+    LoanApplicationStatus.RETURNED_TO_OFFICER,
 )
-# Any of these may be early-exit rejected without walking the whole chain.
+OPEN_APPLICATION_STATUSES = _OPEN_APPLICATION_STATUSES
+# Any of these may be early-exit rejected (by an admin) without walking the whole chain.
 _REJECTABLE_STATUSES = _OPEN_APPLICATION_STATUSES
+_RECOMMENDED_STATUSES = (
+    LoanApplicationStatus.RECOMMENDED_FOR_APPROVAL,
+    LoanApplicationStatus.RECOMMENDED_FOR_REJECTION,
+)
+_RETURNABLE_STATUSES = (*_RECOMMENDED_STATUSES, LoanApplicationStatus.ADMIN_REVIEW)
+# Where the officer can work the checklist (incl. while waiting on the customer).
+CHECKLIST_EDITABLE_STATUSES = (
+    LoanApplicationStatus.OFFICER_REVIEW,
+    LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED,
+)
+_MAX_REQUESTS_PER_ROUND = 10
 
 # Customer-facing labels - internal staff-routing statuses (OFFICER_REVIEW,
-# RECOMMENDED_FOR_APPROVAL, ADMIN_REVIEW) collapse to one friendly label so a
-# customer never sees raw workflow-stage enum text. Staff-facing UIs should
-# use the raw `status` field instead, for precise workflow tracking.
+# RECOMMENDED_FOR_*, ADMIN_REVIEW, RETURNED_TO_OFFICER) collapse to one
+# friendly label so a customer never sees raw workflow-stage enum text.
+# Staff-facing UIs should use the raw `status` field instead, for precise
+# workflow tracking.
 _STATUS_LABELS: dict[LoanApplicationStatus, str] = {
     LoanApplicationStatus.DRAFT: "Draft",
     LoanApplicationStatus.SUBMITTED: "Submitted",
     LoanApplicationStatus.OFFICER_REVIEW: "Under Review",
     LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED: "Action Required",
     LoanApplicationStatus.RECOMMENDED_FOR_APPROVAL: "Under Review",
+    LoanApplicationStatus.RECOMMENDED_FOR_REJECTION: "Under Review",
     LoanApplicationStatus.ADMIN_REVIEW: "Under Review",
+    LoanApplicationStatus.RETURNED_TO_OFFICER: "Under Review",
     LoanApplicationStatus.APPROVED: "Approved",
     LoanApplicationStatus.REJECTED: "Not Approved",
     LoanApplicationStatus.AWAITING_DISBURSEMENT: "Approved - Processing Disbursement",
@@ -73,13 +115,53 @@ class LoanProcessingError(ServiceError):
     """Raised for loan business-rule violations."""
 
 
-def _require_status(application: LoanApplication, expected: LoanApplicationStatus) -> None:
-    if application.status != expected:
+def _require_status(application: LoanApplication, *expected: LoanApplicationStatus) -> None:
+    if application.status not in expected:
+        wanted = " or ".join(s.value for s in expected)
         raise LoanProcessingError(
-            f"Application #{application.id} is {application.status.value}, "
-            f"expected {expected.value}.",
+            f"Application #{application.id} is {application.status.value}, expected {wanted}.",
             status_code=409,
         )
+
+
+# ------------------------------------------------------------------- role guards
+def _is_admin(actor) -> bool:
+    return actor.role == UserRole.ADMIN
+
+
+def _require_admin(actor, action: str) -> None:
+    """Service-level backstop for admin-only actions (the route checks too)."""
+    if not _is_admin(actor):
+        raise LoanProcessingError(f"Only an admin may {action}.", status_code=403)
+
+
+def _require_assignee(application: LoanApplication, actor) -> None:
+    """Claim-on-review: officer actions on an application belong to the
+    officer who claimed it. Admins may always act (e.g. covering for an
+    absent officer); they can also formally reassign via assign_application().
+    """
+    if _is_admin(actor):
+        return
+    if actor.role != UserRole.LOAN_OFFICER:
+        raise LoanProcessingError("Only staff may do this.", status_code=403)
+    if application.assigned_officer_id is None:
+        raise LoanProcessingError(
+            f"Application #{application.id} isn't assigned to an officer. "
+            "Claim it via officer-review, or ask an admin to assign it.",
+            status_code=409,
+        )
+    if application.assigned_officer_id != actor.id:
+        raise LoanProcessingError(
+            f"Application #{application.id} is assigned to another officer.", status_code=403
+        )
+
+
+def can_act_as_officer(application: LoanApplication, actor) -> bool:
+    try:
+        _require_assignee(application, actor)
+    except LoanProcessingError:
+        return False
+    return True
 
 
 # --------------------------------------------------------------- 1. application
@@ -352,59 +434,268 @@ def _transition(
     application: LoanApplication,
     actor,
     *,
-    expected: LoanApplicationStatus,
+    expected: tuple[LoanApplicationStatus, ...],
     new_status: LoanApplicationStatus,
     action: str,
-    note: str | None = None,
+    details: dict | None = None,
 ) -> LoanApplication:
-    _require_status(application, expected)
+    from_status = application.status
+    _require_status(application, *expected)
     application.status = new_status
     audit.record(
         action,
         actor_id=actor.id,
         entity_type="LoanApplication",
         entity_id=application.id,
-        details={"note": note, "from": expected.value, "to": new_status.value},
+        details={"from": from_status.value, "to": new_status.value, **(details or {})},
         commit=False,
     )
     db.session.commit()
     return application
 
 
+def latest_recommendation(application: LoanApplication) -> OfficerRecommendation | None:
+    recs = application.officer_recommendations
+    return recs[-1] if recs else None
+
+
+def open_information_requests(application: LoanApplication) -> list[InformationRequest]:
+    return [r for r in application.information_requests if r.status == InformationRequestStatus.OPEN]
+
+
+def action_required_text(application: LoanApplication) -> str | None:
+    """Back-compat value for the API's `action_required_note` field: the
+    open requests' customer-facing reasons, one per line. (The old
+    loan_applications.action_required_note column is no longer written.)
+    """
+    reasons = [r.reason for r in open_information_requests(application)]
+    return "\n".join(reasons) if reasons else None
+
+
+def serialize_information_request(r: InformationRequest, *, staff: bool) -> dict:
+    """Customer view omits internal_note and staff identities."""
+    response = r.response
+    data = {
+        "id": r.id,
+        "request_type": str(r.request_type),
+        "reason": r.reason,
+        "required_document_type": str(r.required_document_type) if r.required_document_type else None,
+        "required_information": r.required_information,
+        "status": str(r.status),
+        "requested_at": r.requested_at.isoformat() if r.requested_at else None,
+        "cancelled_at": r.cancelled_at.isoformat() if r.cancelled_at else None,
+        "response": (
+            None
+            if response is None
+            else {
+                "id": response.id,
+                "response_note": response.response_note,
+                "responded_at": response.responded_at.isoformat() if response.responded_at else None,
+                "field_changes": response.field_changes,
+                "provided_document_ids": response.provided_document_ids,
+            }
+        ),
+    }
+    if staff:
+        data.update(
+            {
+                "internal_note": r.internal_note,
+                "requested_by": r.requested_by,
+                "requested_by_name": r.requester.full_name if r.requester else None,
+                "cancelled_by": r.cancelled_by,
+                "cancel_reason": r.cancel_reason,
+            }
+        )
+    return data
+
+
+def current_customer_verification(user_id: int) -> CustomerVerification | None:
+    """The customer's VERIFIED, not-yet-expired customer-level verification, if any."""
+    row = CustomerVerification.query.filter_by(
+        user_id=user_id, status=CustomerVerificationStatus.VERIFIED
+    ).first()
+    if row is None or row.valid_until < date.today():
+        return None
+    return row
+
+
+# ------------------------------------------------------------------ claim
 def start_officer_review(application: LoanApplication, officer) -> LoanApplication:
-    """loan_officer or admin."""
+    """loan_officer or admin. Claims the application from the shared queue
+    (sets assigned_officer_id) and opens its verification checklist.
+    """
+    _require_status(application, LoanApplicationStatus.SUBMITTED)
+    application.assigned_officer_id = officer.id
+    application.assigned_at = datetime.now(timezone.utc)
+    verification.ensure_checklist(application)
     return _transition(
         application,
         officer,
-        expected=LoanApplicationStatus.SUBMITTED,
+        expected=(LoanApplicationStatus.SUBMITTED,),
         new_status=LoanApplicationStatus.OFFICER_REVIEW,
         action="loan_application_officer_review_started",
+        details={"assigned_officer_id": officer.id},
     )
 
 
-def request_customer_action(application: LoanApplication, officer, note: str) -> LoanApplication:
-    """loan_officer or admin. `note` is required - it's stored on the
-    application (action_required_note) and shown to the customer, since
-    AuditLog isn't customer-readable.
+def assign_application(application: LoanApplication, admin, officer_id) -> LoanApplication:
+    """admin only. Reassign (or first-assign) an open application to an
+    active loan_officer or admin.
     """
-    if not note or not note.strip():
-        raise LoanProcessingError("note is required when requesting customer action.")
-    application.action_required_note = note.strip()
-    return _transition(
+    _require_admin(admin, "reassign an application")
+    _require_status(application, *_OPEN_APPLICATION_STATUSES)
+    try:
+        officer_id = int(officer_id)
+    except (TypeError, ValueError):
+        raise LoanProcessingError("officer_id must be an integer.")
+    officer = db.session.get(User, officer_id)
+    if officer is None or not officer.is_active:
+        raise LoanProcessingError(f"No active user #{officer_id}.", status_code=404)
+    if officer.role not in (UserRole.LOAN_OFFICER, UserRole.ADMIN):
+        raise LoanProcessingError("Applications can only be assigned to staff.")
+
+    previous = application.assigned_officer_id
+    application.assigned_officer_id = officer.id
+    application.assigned_at = datetime.now(timezone.utc)
+    audit.record(
+        "loan_application_reassigned",
+        actor_id=admin.id,
+        entity_type="LoanApplication",
+        entity_id=application.id,
+        details={"from_officer_id": previous, "to_officer_id": officer.id},
+        commit=False,
+    )
+    db.session.commit()
+    return application
+
+
+# ------------------------------------------------- request more information
+def _parse_information_requests(requests) -> list[dict]:
+    if not requests or not isinstance(requests, list):
+        raise LoanProcessingError("requests must be a non-empty list.")
+    if len(requests) > _MAX_REQUESTS_PER_ROUND:
+        raise LoanProcessingError(f"At most {_MAX_REQUESTS_PER_ROUND} requests per call.")
+    parsed = []
+    for i, r in enumerate(requests):
+        if not isinstance(r, dict):
+            raise LoanProcessingError(f"requests[{i}] must be an object.")
+        try:
+            request_type = InformationRequestType(r.get("request_type"))
+        except ValueError:
+            allowed = ", ".join(t.value for t in InformationRequestType)
+            raise LoanProcessingError(f"requests[{i}].request_type must be one of: {allowed}.")
+        reason = (r.get("reason") or "").strip()
+        if not reason:
+            raise LoanProcessingError(f"requests[{i}].reason is required (shown to the customer).")
+        document_type = r.get("required_document_type")
+        if document_type is not None:
+            try:
+                document_type = DocumentType(document_type)
+            except ValueError:
+                allowed = ", ".join(t.value for t in DocumentType)
+                raise LoanProcessingError(
+                    f"requests[{i}].required_document_type must be one of: {allowed}."
+                )
+        fields = {
+            "reason": (reason, 1000),
+            "required_information": ((r.get("required_information") or "").strip() or None, 500),
+            "internal_note": ((r.get("internal_note") or "").strip() or None, 1000),
+        }
+        for name, (value, limit) in fields.items():
+            if value and len(value) > limit:
+                raise LoanProcessingError(f"requests[{i}].{name} must be at most {limit} characters.")
+        parsed.append(
+            {
+                "request_type": request_type,
+                "reason": reason,
+                "required_document_type": document_type,
+                "required_information": fields["required_information"][0],
+                "internal_note": fields["internal_note"][0],
+            }
+        )
+    return parsed
+
+
+def request_customer_action(
+    application: LoanApplication, officer, requests
+) -> list[InformationRequest]:
+    """Assigned loan_officer or admin. Creates one InformationRequest row per
+    item asked for and moves the application to CUSTOMER_ACTION_REQUIRED.
+    Earlier rounds' requests and responses are left untouched.
+    """
+    _require_status(application, LoanApplicationStatus.OFFICER_REVIEW)
+    _require_assignee(application, officer)
+    parsed = _parse_information_requests(requests)
+
+    rows = [
+        InformationRequest(requested_by=officer.id, status=InformationRequestStatus.OPEN, **p)
+        for p in parsed
+    ]
+    application.information_requests.extend(rows)
+    db.session.flush()
+    _transition(
         application,
         officer,
-        expected=LoanApplicationStatus.OFFICER_REVIEW,
+        expected=(LoanApplicationStatus.OFFICER_REVIEW,),
         new_status=LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED,
         action="loan_application_customer_action_requested",
-        note=note,
+        details={
+            "requests": [
+                {"id": r.id, "request_type": r.request_type.value, "reason": r.reason} for r in rows
+            ]
+        },
     )
+    return rows
+
+
+def _json_value(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if hasattr(value, "value"):  # enum
+        return value.value
+    return value
+
+
+def _parse_responses(responses, open_ids: set[int]) -> dict[int, str]:
+    if not responses or not isinstance(responses, list):
+        raise LoanProcessingError(
+            "responses must be a non-empty list of {information_request_id, response_note}."
+        )
+    notes: dict[int, str] = {}
+    for i, r in enumerate(responses):
+        if not isinstance(r, dict):
+            raise LoanProcessingError(f"responses[{i}] must be an object.")
+        try:
+            request_id = int(r.get("information_request_id"))
+        except (TypeError, ValueError):
+            raise LoanProcessingError(f"responses[{i}].information_request_id must be an integer.")
+        note = (r.get("response_note") or "").strip()
+        if not note:
+            raise LoanProcessingError(f"responses[{i}].response_note is required.")
+        if len(note) > 1000:
+            raise LoanProcessingError(f"responses[{i}].response_note must be at most 1000 characters.")
+        if request_id in notes:
+            raise LoanProcessingError(f"Request #{request_id} is answered twice.")
+        notes[request_id] = note
+
+    unknown = sorted(set(notes) - open_ids)
+    if unknown:
+        raise LoanProcessingError(
+            f"Request(s) {unknown} are not open requests on this application.", status_code=409
+        )
+    missing = sorted(open_ids - set(notes))
+    if missing:
+        raise LoanProcessingError(
+            f"Every open request must be answered - missing: {missing}.", status_code=400
+        )
+    return notes
 
 
 def respond_to_customer_action(
     application: LoanApplication,
     customer,
     *,
-    response_note: str,
+    responses,
     purpose_category=None,
     purpose: str | None = None,
     confirmed_full_name: str | None = None,
@@ -418,22 +709,29 @@ def respond_to_customer_action(
     disbursement_account_reference=None,
     document_ids: list[int] | None = None,
 ) -> LoanApplication:
-    """customer only, and only the application's own owner. Updates the
-    EXISTING application (never creates a new one) and returns it to
-    OFFICER_REVIEW. Every field is optional except response_note - only
-    what's actually provided gets changed; the rest of the application is
-    left as-is.
+    """customer only, and only the application's own owner. Answers EVERY
+    open InformationRequest (one InformationResponse row each, linked to that
+    exact request), applies any field updates to the EXISTING application
+    (never creates a new one), and returns it to OFFICER_REVIEW. The old value
+    of every changed field is kept in each response's field_changes.
     """
     if application.user_id != customer.id:
         raise LoanProcessingError("You can only respond to your own application.", 403)
     _require_status(application, LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED)
-    if not response_note or not response_note.strip():
-        raise LoanProcessingError("response_note is required.")
+    open_requests = {r.id: r for r in open_information_requests(application)}
+    notes = _parse_responses(responses, set(open_requests))
 
     changed: list[str] = []
+    field_changes: dict[str, dict] = {}
+
+    def _record(name, old, new):
+        if old != new:
+            field_changes[name] = {"old": _json_value(old), "new": _json_value(new)}
 
     if purpose_category is not None:
         category, description = _parse_purpose(purpose_category, purpose)
+        _record("purpose_category", application.purpose_category, category)
+        _record("purpose", application.purpose, description)
         application.purpose_category = category
         application.purpose = description
         changed.append("purpose")
@@ -446,23 +744,42 @@ def respond_to_customer_action(
             if confirmed_phone_number is not None
             else application.confirmed_phone_number,
         )
+        _record("confirmed_full_name", application.confirmed_full_name, full_name)
+        _record("confirmed_email", application.confirmed_email, email)
+        _record("confirmed_phone_number", application.confirmed_phone_number, phone_number)
         application.confirmed_full_name = full_name
         application.confirmed_email = email
         application.confirmed_phone_number = phone_number
         changed.append("personal_details")
 
     if monthly_income is not None:
-        application.monthly_income = _parse_income(monthly_income)
+        new = _parse_income(monthly_income)
+        _record("monthly_income", application.monthly_income, new)
+        application.monthly_income = new
         changed.append("monthly_income")
     if employment_status is not None:
-        application.employment_status = _parse_employment(employment_status)
+        new = _parse_employment(employment_status)
+        _record("employment_status", application.employment_status, new)
+        application.employment_status = new
         changed.append("employment_status")
     if existing_monthly_debt is not None:
-        application.existing_monthly_debt = _parse_debt(existing_monthly_debt)
+        new = _parse_debt(existing_monthly_debt)
+        _record("existing_monthly_debt", application.existing_monthly_debt, new)
+        application.existing_monthly_debt = new
         changed.append("existing_monthly_debt")
 
     if referees is not None:
         referee_rows = _parse_referees(referees)
+        old_referees = [
+            {
+                "full_name": r.full_name,
+                "relationship": r.relationship_to_applicant,
+                "mobile_number": r.mobile_number,
+                "employer_name": r.employer_name,
+            }
+            for r in application.referees
+        ]
+        _record("referees", old_referees, referee_rows)
         for old in list(application.referees):
             db.session.delete(old)
         db.session.flush()
@@ -482,13 +799,36 @@ def respond_to_customer_action(
         method, account_reference = _parse_disbursement_selection(
             disbursement_method_requested, disbursement_account_reference
         )
+        _record(
+            "disbursement_method_requested", application.disbursement_method_requested, method
+        )
+        _record(
+            "disbursement_account_reference",
+            application.disbursement_account_reference,
+            account_reference,
+        )
         application.disbursement_method_requested = method
         application.disbursement_account_reference = account_reference
         changed.append("disbursement_method")
 
+    provided_document_ids = None
     if document_ids:
         documents.link_documents_to_application(document_ids, customer, application.id)
+        provided_document_ids = sorted({int(d) for d in document_ids})
         changed.append("documents")
+
+    for request_id, note in notes.items():
+        request = open_requests[request_id]
+        request.status = InformationRequestStatus.RESPONDED
+        db.session.add(
+            InformationResponse(
+                information_request_id=request_id,
+                responded_by=customer.id,
+                response_note=note,
+                field_changes=field_changes or None,
+                provided_document_ids=provided_document_ids,
+            )
+        )
 
     # Refresh the advisory credit-evaluation result so the officer sees
     # current numbers when they resume review - still never touches status.
@@ -503,74 +843,219 @@ def respond_to_customer_action(
     application.credit_evaluation_result = evaluation
 
     application.status = LoanApplicationStatus.OFFICER_REVIEW
-    application.action_required_note = None
     audit.record(
         "loan_application_customer_responded",
         actor_id=customer.id,
         entity_type="LoanApplication",
         entity_id=application.id,
-        details={"response_note": response_note, "changed_fields": changed},
+        details={
+            "request_ids": sorted(notes),
+            "changed_fields": changed,
+            "from": LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED.value,
+            "to": LoanApplicationStatus.OFFICER_REVIEW.value,
+        },
         commit=False,
     )
     db.session.commit()
     return application
 
 
-def resume_officer_review(application: LoanApplication, officer) -> LoanApplication:
-    """loan_officer or admin - called once the requested info/docs are in."""
+def resume_officer_review(
+    application: LoanApplication, officer, reason: str | None = None
+) -> LoanApplication:
+    """Assigned loan_officer or admin. Back to OFFICER_REVIEW from either:
+      * CUSTOMER_ACTION_REQUIRED without waiting for the customer - every
+        open request is CANCELLED (kept, with who/when/why), so `reason` is
+        required; or
+      * RETURNED_TO_OFFICER, after an admin sent it back.
+    """
+    _require_status(
+        application,
+        LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED,
+        LoanApplicationStatus.RETURNED_TO_OFFICER,
+    )
+    _require_assignee(application, officer)
+    reason = (reason or "").strip() or None
+    if reason and len(reason) > 1000:
+        raise LoanProcessingError("reason must be at most 1000 characters.")
+
+    cancelled: list[int] = []
+    if application.status == LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED:
+        if not reason:
+            raise LoanProcessingError(
+                "reason is required - resuming cancels the customer's open requests."
+            )
+        now = datetime.now(timezone.utc)
+        for r in open_information_requests(application):
+            r.status = InformationRequestStatus.CANCELLED
+            r.cancelled_by = officer.id
+            r.cancelled_at = now
+            r.cancel_reason = reason
+            cancelled.append(r.id)
+
     return _transition(
         application,
         officer,
-        expected=LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED,
+        expected=(
+            LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED,
+            LoanApplicationStatus.RETURNED_TO_OFFICER,
+        ),
         new_status=LoanApplicationStatus.OFFICER_REVIEW,
         action="loan_application_officer_review_resumed",
+        details={"reason": reason, "cancelled_request_ids": cancelled},
     )
 
 
-def recommend_for_approval(
-    application: LoanApplication, officer, note: str | None = None
-) -> LoanApplication:
-    """loan_officer or admin."""
-    return _transition(
+# --------------------------------------------------------- verification
+def update_checklist_item(
+    application: LoanApplication, officer, item_type: str, *, status, note: str | None = None
+):
+    """Assigned loan_officer or admin, while the application is with the officer."""
+    _require_status(application, *CHECKLIST_EDITABLE_STATUSES)
+    _require_assignee(application, officer)
+    return verification.update_item(application, officer, item_type, status=status, note=note)
+
+
+# ------------------------------------------------------- recommendation
+def submit_recommendation(
+    application: LoanApplication, officer, *, recommendation, comments
+) -> OfficerRecommendation:
+    """Assigned loan_officer or admin. Records an immutable
+    OfficerRecommendation (with the checklist frozen into it) and hands the
+    application to the admin as RECOMMENDED_FOR_APPROVAL / _REJECTION.
+
+    This ONLY writes the recommendation row and the application status. It
+    never creates a Loan, a repayment schedule or a Disbursement, and never
+    decides the application - that is decide_application(), admin only.
+    """
+    _require_status(application, LoanApplicationStatus.OFFICER_REVIEW)
+    _require_assignee(application, officer)
+    try:
+        kind = OfficerRecommendationType(recommendation)
+    except ValueError:
+        allowed = ", ".join(k.value for k in OfficerRecommendationType)
+        raise LoanProcessingError(f"recommendation must be one of: {allowed}.")
+    comments = (comments or "").strip()
+    if not comments:
+        raise LoanProcessingError("comments are required.")
+    if len(comments) > 2000:
+        raise LoanProcessingError("comments must be at most 2000 characters.")
+
+    verification.ensure_checklist(application)
+    if kind == OfficerRecommendationType.RECOMMEND_APPROVAL:
+        blocking = verification.blocking_items(application)
+        if blocking:
+            raise LoanProcessingError(
+                "Cannot recommend approval until every required checklist item is "
+                f"verified or not applicable, and none failed. Outstanding: {blocking}.",
+                status_code=409,
+            )
+
+    customer_verification = current_customer_verification(application.user_id)
+    rec = OfficerRecommendation(
+        officer_id=officer.id,
+        recommendation=kind,
+        comments=comments,
+        checklist_snapshot=verification.snapshot(application),
+        credit_evaluation_snapshot=application.credit_evaluation_result,
+        customer_verification_id=customer_verification.id if customer_verification else None,
+    )
+    application.officer_recommendations.append(rec)
+    db.session.flush()
+
+    approve = kind == OfficerRecommendationType.RECOMMEND_APPROVAL
+    _transition(
         application,
         officer,
-        expected=LoanApplicationStatus.OFFICER_REVIEW,
-        new_status=LoanApplicationStatus.RECOMMENDED_FOR_APPROVAL,
-        action="loan_application_recommended_for_approval",
-        note=note,
+        expected=(LoanApplicationStatus.OFFICER_REVIEW,),
+        new_status=(
+            LoanApplicationStatus.RECOMMENDED_FOR_APPROVAL
+            if approve
+            else LoanApplicationStatus.RECOMMENDED_FOR_REJECTION
+        ),
+        action=(
+            "loan_application_recommended_for_approval"
+            if approve
+            else "loan_application_recommended_for_rejection"
+        ),
+        details={"recommendation_id": rec.id, "note": comments},
     )
+    return rec
 
 
+# ------------------------------------------------------------- admin review
 def start_admin_review(application: LoanApplication, admin) -> LoanApplication:
     """admin only."""
+    _require_admin(admin, "start admin review")
     return _transition(
         application,
         admin,
-        expected=LoanApplicationStatus.RECOMMENDED_FOR_APPROVAL,
+        expected=_RECOMMENDED_STATUSES,
         new_status=LoanApplicationStatus.ADMIN_REVIEW,
         action="loan_application_admin_review_started",
     )
 
 
-def reject_application(application: LoanApplication, actor, note: str | None = None) -> LoanApplication:
-    """loan_officer or admin. Early-exit reject from any open status - a
-    doomed application doesn't need to walk the whole chain first.
+def return_to_officer(application: LoanApplication, admin, reason: str) -> AdminReturn:
+    """admin only. Sends a recommended application back to its officer
+    (RETURNED_TO_OFFICER) with a reason, instead of deciding it.
     """
+    _require_admin(admin, "return an application to its officer")
+    _require_status(application, *_RETURNABLE_STATUSES)
+    reason = (reason or "").strip()
+    if not reason:
+        raise LoanProcessingError("reason is required.")
+    if len(reason) > 2000:
+        raise LoanProcessingError("reason must be at most 2000 characters.")
+    rec = latest_recommendation(application)
+    if rec is None:
+        raise LoanProcessingError(
+            f"Application #{application.id} has no recommendation to return.", status_code=409
+        )
+
+    returned = AdminReturn(officer_recommendation_id=rec.id, returned_by=admin.id, reason=reason)
+    application.admin_returns.append(returned)
+    db.session.flush()
+    _transition(
+        application,
+        admin,
+        expected=_RETURNABLE_STATUSES,
+        new_status=LoanApplicationStatus.RETURNED_TO_OFFICER,
+        action="loan_application_returned_to_officer",
+        details={"admin_return_id": returned.id, "recommendation_id": rec.id, "reason": reason},
+    )
+    return returned
+
+
+def reject_application(application: LoanApplication, admin, note: str | None = None) -> LoanApplication:
+    """admin only. Early-exit reject from any open status - a doomed
+    application doesn't need to walk the whole chain first. (A loan officer
+    recommends rejection instead; see submit_recommendation().)
+    """
+    _require_admin(admin, "reject an application")
     if application.status not in _REJECTABLE_STATUSES:
         raise LoanProcessingError(
             f"Application #{application.id} is already {application.status.value}.",
             status_code=409,
         )
+    from_status = application.status
+    rec = latest_recommendation(application)
     now = datetime.now(timezone.utc)
     application.status = LoanApplicationStatus.REJECTED
     application.decided_at = now
-    application.decided_by = actor.id
+    application.decided_by = admin.id
     audit.record(
         "loan_application_decision",
-        actor_id=actor.id,
+        actor_id=admin.id,
         entity_type="LoanApplication",
         entity_id=application.id,
-        details={"decision": "reject", "note": note},
+        details={
+            "decision": "reject",
+            "note": note,
+            "early_exit": True,
+            "from": from_status.value,
+            "recommendation_id": rec.id if rec else None,
+        },
         commit=False,
     )
     db.session.commit()
@@ -588,8 +1073,32 @@ def decide_application(
     same transaction: the application's job is done from here, no Loan is
     created yet (see disburse_application - that's the separate, genuinely
     distinct disbursement event, item 6).
+
+    Going against the officer's recommendation requires a note. The audit
+    entry records which recommendation the decision was made on, whether it
+    overrode it, and whether the same person made both (allowed, but visible).
     """
+    _require_admin(admin, "make the final decision")
     _require_status(application, LoanApplicationStatus.ADMIN_REVIEW)
+
+    rec = latest_recommendation(application)
+    overrides = bool(
+        rec
+        and (rec.recommendation == OfficerRecommendationType.RECOMMEND_APPROVAL) != approve
+    )
+    note = (note or "").strip() or None
+    if overrides and not note:
+        raise LoanProcessingError(
+            "note is required when the decision goes against the officer's recommendation."
+        )
+    decision_details = {
+        "decision": "approve" if approve else "reject",
+        "note": note,
+        "recommendation_id": rec.id if rec else None,
+        "recommendation": rec.recommendation.value if rec else None,
+        "overrides_recommendation": overrides,
+        "same_actor_as_recommender": bool(rec and rec.officer_id == admin.id),
+    }
 
     now = datetime.now(timezone.utc)
     application.decided_at = now
@@ -602,7 +1111,7 @@ def decide_application(
             actor_id=admin.id,
             entity_type="LoanApplication",
             entity_id=application.id,
-            details={"decision": "reject", "note": note},
+            details=decision_details,
             commit=False,
         )
         db.session.commit()
@@ -615,7 +1124,7 @@ def decide_application(
         actor_id=admin.id,
         entity_type="LoanApplication",
         entity_id=application.id,
-        details={"decision": "approve", "note": note},
+        details=decision_details,
         commit=False,
     )
     application.status = LoanApplicationStatus.AWAITING_DISBURSEMENT
@@ -646,6 +1155,7 @@ def disburse_application(
     """
     from . import repayments_scheduler  # local import: avoid a circular import
 
+    _require_admin(admin, "record a disbursement")
     _require_status(application, LoanApplicationStatus.AWAITING_DISBURSEMENT)
 
     try:
@@ -706,10 +1216,11 @@ def disburse_application(
 
 
 # ---------------------------------------------------------------- 5. closure
-def close_loan(loan: Loan, actor) -> Loan:
-    """loan_officer or admin. Explicit archival step: PAID -> CLOSED.
+def close_loan(loan: Loan, admin) -> Loan:
+    """admin only. Explicit archival step: PAID -> CLOSED.
     Nothing auto-advances a loan from PAID to CLOSED - see the migration plan.
     """
+    _require_admin(admin, "close a loan")
     if loan.status != LoanStatus.PAID:
         raise LoanProcessingError(
             f"Loan #{loan.id} is {loan.status.value}, expected paid.", status_code=409
@@ -718,7 +1229,7 @@ def close_loan(loan: Loan, actor) -> Loan:
     loan.closure_reason = LoanClosureReason.PAID_IN_FULL
     audit.record(
         "loan_closed",
-        actor_id=actor.id,
+        actor_id=admin.id,
         entity_type="Loan",
         entity_id=loan.id,
         details={"closure_reason": loan.closure_reason.value},
@@ -733,6 +1244,7 @@ def write_off_loan(loan: Loan, admin, note: str | None = None) -> Loan:
     - without this, LoanClosureReason.DEFAULTED (and the credit-scoring
     signal it feeds) would be unreachable dead code.
     """
+    _require_admin(admin, "write off a loan")
     if loan.status not in (LoanStatus.ACTIVE, LoanStatus.OVERDUE):
         raise LoanProcessingError(
             f"Loan #{loan.id} is {loan.status.value}; only active/overdue loans "

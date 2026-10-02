@@ -160,3 +160,23 @@ def enrolled_customer(client):
         }
 
     return _make
+
+
+
+@pytest.fixture
+def workflow(client):
+    """tests/_workflow.py's steps, pre-bound to this test's client."""
+    import functools
+    import types
+
+    import _workflow
+
+    return types.SimpleNamespace(
+        **{
+            name: functools.partial(getattr(_workflow, name), client)
+            for name in (
+                "complete_checklist", "recommend", "request_info",
+                "open_request_ids", "respond", "to_disbursed_loan",
+            )
+        }
+    )

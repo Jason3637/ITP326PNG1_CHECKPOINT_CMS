@@ -12,6 +12,7 @@ from .accounts import ns as accounts_ns
 from .admin import ns as admin_ns
 from .auth import ns as auth_ns
 from .loans import ns as loans_ns
+from .officer import ns as officer_ns
 from .payments import ns as payments_ns
 from .reports import ns as reports_ns
 from .users import ns as users_ns
@@ -40,6 +41,7 @@ api.add_namespace(auth_ns)
 api.add_namespace(users_ns)
 api.add_namespace(accounts_ns)
 api.add_namespace(loans_ns)
+api.add_namespace(officer_ns)
 api.add_namespace(payments_ns)
 api.add_namespace(reports_ns)
 api.add_namespace(admin_ns)

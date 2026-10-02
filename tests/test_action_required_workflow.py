@@ -9,6 +9,8 @@ from app.extensions import db
 from app.models import AuditLog, Document, LoanApplication
 from app.models.enums import DocumentType
 
+import _workflow
+
 
 def _make_document(user, application_id=None, *, document_type="id_verification"):
     doc = Document(
@@ -39,10 +41,13 @@ def test_action_required_round_trip_with_document_replacement(
     r = client.post(f"/api/loans/applications/{app_id}/officer-review", headers=oh)
     assert r.status_code == 200, r.get_json()
 
-    r = client.post(
-        f"/api/loans/applications/{app_id}/request-action",
-        headers=oh,
-        json={"note": "Please upload a clearer ID photo."},
+    r = _workflow.request_info(
+        client,
+        app_id,
+        oh,
+        reason="Please upload a clearer ID photo.",
+        request_type="document_unclear",
+        required_document_type="id_verification",
     )
     assert r.status_code == 200, r.get_json()
     body = r.get_json()
@@ -68,7 +73,12 @@ def test_action_required_round_trip_with_document_replacement(
         f"/api/loans/applications/{app_id}/respond",
         headers=ch,
         json={
-            "response_note": "Uploaded a clearer photo.",
+            "responses": [
+                {
+                    "information_request_id": _workflow.open_request_ids(client, app_id, ch)[0],
+                    "response_note": "Uploaded a clearer photo.",
+                }
+            ],
             "document_ids": [new_doc.id],
         },
     )
@@ -133,7 +143,7 @@ def test_respond_requires_customer_action_required_status(
     r = client.post(
         f"/api/loans/applications/{app_id}/respond",
         headers=ch,
-        json={"response_note": "Nothing was requested yet."},
+        json={"responses": [{"information_request_id": 1, "response_note": "Nothing was requested yet."}]},
     )
     assert r.status_code == 409
 
@@ -150,16 +160,13 @@ def test_customer_cannot_respond_to_someone_elses_application(
     r = client.post("/api/loans/apply", headers=ch, json=apply_payload())
     app_id = r.get_json()["id"]
     client.post(f"/api/loans/applications/{app_id}/officer-review", headers=oh)
-    client.post(
-        f"/api/loans/applications/{app_id}/request-action",
-        headers=oh,
-        json={"note": "Please clarify your employer."},
-    )
+    _workflow.request_info(client, app_id, oh, reason="Please clarify your employer.")
+    request_id = _workflow.open_request_ids(client, app_id, ch)[0]
 
     r = client.post(
         f"/api/loans/applications/{app_id}/respond",
         headers=other_ch,
-        json={"response_note": "Not my application."},
+        json={"responses": [{"information_request_id": request_id, "response_note": "Not mine."}]},
     )
     assert r.status_code == 403
 
@@ -176,19 +183,10 @@ def test_respond_without_documents_still_clears_the_note_and_updates_fields(
     r = client.post("/api/loans/apply", headers=ch, json=apply_payload())
     app_id = r.get_json()["id"]
     client.post(f"/api/loans/applications/{app_id}/officer-review", headers=oh)
-    client.post(
-        f"/api/loans/applications/{app_id}/request-action",
-        headers=oh,
-        json={"note": "Please confirm your employer's name."},
-    )
+    _workflow.request_info(client, app_id, oh, reason="Please confirm your employer's name.")
 
-    r = client.post(
-        f"/api/loans/applications/{app_id}/respond",
-        headers=ch,
-        json={
-            "response_note": "Updated my employer.",
-            "employment_status": "self_employed",
-        },
+    r = _workflow.respond(
+        client, app_id, ch, note="Updated my employer.", employment_status="self_employed"
     )
     assert r.status_code == 200, r.get_json()
     body = r.get_json()

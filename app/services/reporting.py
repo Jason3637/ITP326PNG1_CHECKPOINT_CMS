@@ -32,6 +32,7 @@ _OPEN_APPLICATION_STATUSES = (
     LoanApplicationStatus.OFFICER_REVIEW,
     LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED,
     LoanApplicationStatus.RECOMMENDED_FOR_APPROVAL,
+    LoanApplicationStatus.RECOMMENDED_FOR_REJECTION,
     LoanApplicationStatus.ADMIN_REVIEW,
 )
 

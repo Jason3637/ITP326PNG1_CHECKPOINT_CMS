@@ -97,6 +97,18 @@ class LoanApplication(db.Model):
         db.ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Claim-on-review: NULL while the application sits in the shared officer
+    # queue; set by the officer (or admin) who starts officer review, after
+    # which only they or an admin may take officer actions on it. Admins can
+    # reassign. SET NULL: if that staff account is ever removed, the
+    # application simply goes back to the shared queue.
+    assigned_officer_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    assigned_at = db.Column(db.DateTime(timezone=True))
 
     # ---------------------------------------------------------------- relationships
     applicant = db.relationship(
@@ -128,6 +140,40 @@ class LoanApplication(db.Model):
         uselist=False,
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+    assigned_officer = db.relationship("User", foreign_keys=[assigned_officer_id])
+
+    # Loan Officer workflow history. Deleted with the application, but
+    # deliberately WITHOUT delete-orphan: removing a row from one of these
+    # lists must not silently delete history (it fails on the NOT NULL FK
+    # instead).
+    information_requests = db.relationship(
+        "InformationRequest",
+        back_populates="loan_application",
+        cascade="save-update, merge, delete",
+        passive_deletes=True,
+        order_by="InformationRequest.id",
+    )
+    verification_items = db.relationship(
+        "VerificationItem",
+        back_populates="loan_application",
+        cascade="save-update, merge, delete",
+        passive_deletes=True,
+        order_by="VerificationItem.id",
+    )
+    officer_recommendations = db.relationship(
+        "OfficerRecommendation",
+        back_populates="loan_application",
+        cascade="save-update, merge, delete",
+        passive_deletes=True,
+        order_by="OfficerRecommendation.id",
+    )
+    admin_returns = db.relationship(
+        "AdminReturn",
+        back_populates="loan_application",
+        cascade="save-update, merge, delete",
+        passive_deletes=True,
+        order_by="AdminReturn.id",
     )
 
     def __repr__(self) -> str:

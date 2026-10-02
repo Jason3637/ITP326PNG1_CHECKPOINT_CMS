@@ -266,28 +266,85 @@ orchestrated by `loan_processing.py` and exposed through the namespaces.
 | Diagram module | File | Entry points |
 |---|---|---|
 | Members Registry | `services/members.py` | `get_profile()` |
-| Loan Processing | `services/loan_processing.py` | `submit_application()`, `list_applications()`, `decide_application()` |
-| Credit Evaluation | `services/credit_evaluation.py` | `evaluate()` — **interim model, thresholds still provisional** (see below) |
-| Interest Calculation | `services/interest_calculation.py` | `amortize()`, `installment_count()` |
-| Repayments Scheduler | `services/repayments_scheduler.py` | `generate_schedule()` |
+| Loan Processing | `services/loan_processing.py` | the application state machine: `submit_application()`, `start_officer_review()`, `request_customer_action()`, `respond_to_customer_action()`, `submit_recommendation()`, `decide_application()`, `disburse_application()`, ... |
+| Verification checklist | `services/verification.py` | `CHECKLIST` registry, `update_item()`, `serialize_checklist()` |
+| Loan Officer workspace | `services/officer_views.py` | `queue_counts()`, `list_queue()`, `application_detail()`, `customer_history()` |
+| Credit Evaluation | `services/credit_evaluation.py` | `evaluate()` — **interim model, thresholds still provisional, advisory only** (see below) |
+| PRIME pricing | `services/prime_pricing.py` | `calculate_prime()` — the only place tiers/rates live |
+| Repayments Scheduler | `services/repayments_scheduler.py` | `generate_bullet_schedule()` |
 | Account tracking | `services/accounts.py` | `get_account_summary()` |
 | Audit Ledger | `services/audit.py` | `record()` (every state change) |
 
+### Application workflow
+
+```
+SUBMITTED --officer claims--> OFFICER_REVIEW
+OFFICER_REVIEW --officer requests information--> CUSTOMER_ACTION_REQUIRED
+CUSTOMER_ACTION_REQUIRED --customer responds | officer resumes (cancels open requests)--> OFFICER_REVIEW
+OFFICER_REVIEW --officer recommends--> RECOMMENDED_FOR_APPROVAL | RECOMMENDED_FOR_REJECTION
+RECOMMENDED_FOR_* --admin--> ADMIN_REVIEW
+RECOMMENDED_FOR_* | ADMIN_REVIEW --admin returns--> RETURNED_TO_OFFICER --officer resumes--> OFFICER_REVIEW
+ADMIN_REVIEW --admin--> APPROVED -> AWAITING_DISBURSEMENT --admin disburses--> Loan ACTIVE
+ADMIN_REVIEW --admin--> REJECTED
+any open status --admin early exit--> REJECTED
+```
+
+* **Claim-on-review:** a SUBMITTED application is in the shared officer queue; `officer-review` claims it (`assigned_officer_id`). Only that officer — or an admin — can then work the checklist, request information, resume or recommend. Admins can reassign.
+* **Request More Information** creates one `InformationRequest` row per item; the customer's `respond` must answer every open request and creates one `InformationResponse` per request (with the old/new value of each field it changed). Rounds are never overwritten. `action_required_note` in API responses is now derived from the open requests (the old column is no longer written).
+* **Recommendations** are immutable `OfficerRecommendation` rows with the checklist frozen into them. Approval needs every required checklist item `verified`/`not_applicable` and none `failed`. Recommending never creates a loan or touches disbursement.
+* **Credit assessment** is advisory only — shown to staff as `credit_assessment: {label: "Advisory - not a decision input", advisory: true, affects_status: false, result}`; customers never see it, and no code path reads it to set a status.
+
+### RBAC matrix
+
+| Action | customer | loan_officer | admin |
+|---|:-:|:-:|:-:|
+| Apply; respond to own information requests | ✅ own | — | — |
+| Officer queues, review screen, checklist (read), customer history\* | — | ✅ | ✅ |
+| Claim (start officer review) | — | ✅ | ✅ |
+| Update checklist items; request information; resume review; recommend approval/rejection | — | ✅ if claimed by them | ✅ |
+| Reassign; start admin review; return to officer | — | ❌ | ✅ |
+| **Final approve / reject; early-exit reject** | — | ❌ | ✅ |
+| **Record disbursement** | — | ❌ | ✅ |
+| Report a repayment | ✅ own | ✅ counter entry | ✅ |
+| Claim a repayment for verification | — | ✅ | ✅ |
+| **Verify / reject a repayment** | — | ❌ | ✅ |
+| Close a paid loan; write off a loan | — | ❌ | ✅ |
+| System parameters; audit logs | — | ❌ | ✅ |
+
+\* Loan officers reach customer history only through an application that is still open — there is no customer-id lookup.
+Admin-only actions are checked at the route **and** in the service layer (`loan_processing._require_admin`, `payment_processing.verify_payment`), covered by `tests/test_loan_officer_rbac.py`. An admin may act in the officer role (claim, recommend) and then decide, but each is a separate, separately audited call; the decision's audit entry records `same_actor_as_recommender` and `overrides_recommendation`.
+
 ### Endpoints
+
+Full request/response models are in Swagger (`/api/docs`).
 
 | Method | Path | Role | Purpose |
 |---|---|---|---|
 | GET | `/api/users/profile` | any authenticated | logged-in member's profile |
-| POST | `/api/loans/apply` | `customer` | submit a LoanApplication (runs credit evaluation) |
-| GET | `/api/loans/applications` | `loan_officer`, `admin` | list open applications (`?status=` to filter) |
-| POST | `/api/loans/applications/<id>/decision` | `loan_officer`, `admin` | `{"decision":"approve"\|"reject", "interest_rate"?, "note"?}` |
+| POST | `/api/loans/apply` | `customer` | submit a LoanApplication (runs the advisory credit evaluation) |
+| GET | `/api/loans/prime-preview` | any authenticated | live PRIME pricing for an amount |
+| GET | `/api/loans/applications/mine` | `customer` | own applications incl. information requests |
+| GET | `/api/loans/applications` | `loan_officer`, `admin` | open applications (`?status=`) |
+| POST | `/api/loans/applications/<id>/officer-review` | `loan_officer`, `admin` | claim: SUBMITTED → OFFICER_REVIEW |
+| POST | `/api/loans/applications/<id>/request-action` | assigned officer, `admin` | `{"requests": [{request_type, reason, required_document_type?, required_information?, internal_note?}]}` |
+| POST | `/api/loans/applications/<id>/respond` | `customer` (owner) | `{"responses": [{information_request_id, response_note}], ...field updates}` |
+| POST | `/api/loans/applications/<id>/resume-review` | assigned officer, `admin` | `{"reason"}` (required when cancelling open requests) |
+| POST | `/api/loans/applications/<id>/recommend` | assigned officer, `admin` | `{"recommendation": "recommend_approval" or "recommend_rejection", "comments"}` |
+| POST | `/api/loans/applications/<id>/assign` | `admin` | `{"officer_id"}` |
+| POST | `/api/loans/applications/<id>/admin-review` | `admin` | RECOMMENDED_FOR_* → ADMIN_REVIEW |
+| POST | `/api/loans/applications/<id>/return-to-officer` | `admin` | `{"reason"}` → RETURNED_TO_OFFICER |
+| POST | `/api/loans/applications/<id>/decision` | `admin` | `{"decision": "approve" or "reject", "note"}` (note required when overriding the recommendation) |
+| POST | `/api/loans/applications/<id>/reject` | `admin` | early-exit reject from any open status |
+| POST | `/api/loans/applications/<id>/disburse` | `admin` | creates the Loan + schedule + Disbursement |
+| GET | `/api/officer/queues` | `loan_officer`, `admin` | `{queues: {name: {total, mine, unassigned}}}` |
+| GET | `/api/officer/queues/<queue>` | `loan_officer`, `admin` | `awaiting_review`, `under_review`, `customer_action_required`, `sent_to_admin`, `returned_by_admin`; filters `assigned` (any/me/unassigned), `officer_id`, `prime_category`, `page`, `per_page` |
+| GET | `/api/officer/applications/<id>` | `loan_officer`, `admin` | the Application Review screen in one call |
+| GET | `/api/officer/applications/<id>/checklist` | `loan_officer`, `admin` | checklist state |
+| PATCH | `/api/officer/applications/<id>/checklist/<item_type>` | assigned officer, `admin` | `{"status", "note"}` — one item, records who/when |
+| GET | `/api/officer/applications/<id>/customer-history` | `loan_officer`\*, `admin` | this application's customer's history |
 | GET | `/api/loans/mine` | `customer` | the customer's own loans + schedules |
+| POST | `/api/loans/<id>/close`, `/api/loans/<id>/write-off` | `admin` | PAID → CLOSED; ACTIVE/OVERDUE → CLOSED (defaulted) |
 | GET | `/api/accounts/summary` | `customer` | dashboard: active loans, next repayment due, progress % |
-
-On **approve**: a `Loan` row is created, priced via `amortize()`, disbursed
-(`disbursed_at = now` — for a small SME, approval == disbursement), and a full
-`RepaymentSchedule` is generated. Audit rows written: `loan_application_submitted`,
-`loan_application_decision`, `loan_disbursed`.
 
 ### Interest rate configuration — where it lives
 
@@ -298,8 +355,9 @@ Prime's Vault is a small SME, not a bank with tiered rate products, so there is
 DEFAULT_ANNUAL_INTEREST_RATE=0.18   # 18% APR, as a fraction
 ```
 
-A loan officer may override the rate for an individual decision
-(`"interest_rate": 0.15` in the decision body). Whatever rate is actually used is
+The PRIME product does not use this rate: its flat per-tier rates live in
+`app/services/prime_pricing.py`, and the decision endpoint takes no rate
+override. Whatever rate is actually used is
 persisted on `loans.interest_rate`, so historical loans are unaffected by later
 config changes. Other tunables (also env vars, defaults shown):
 `MIN_LOAN_AMOUNT=100`, `MAX_LOAN_AMOUNT=50000`, `MIN_LOAN_TERM_MONTHS=1`,
@@ -354,7 +412,8 @@ contact, no credit bureau integration) — entirely self-reported at
 application time by the applicant. `max_eligible_amount` is capped by
 affordability (the largest principal whose installment still respects the DTI
 ceiling) whenever income is known, not just the naive score-linear cap. It
-never auto-approves — a loan officer always makes the final decision.
+never auto-approves — an admin always makes the final decision, on a loan
+officer's recommendation.
 
 **Frontend note:** `POST /api/loans/apply` gained three optional request
 fields feeding this — `monthly_income`, `employment_status`,
