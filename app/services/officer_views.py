@@ -2,9 +2,10 @@
 Application Review screen, and the application-scoped customer history.
 
 Everything here is a read, filtered in SQL (queues are real queries, not
-"fetch everything and filter client-side"). The one write is lazily opening
-the verification checklist for an application already in review that
-predates it (see application_detail()).
+"fetch everything and filter client-side"). The writes are audit entries -
+viewing a customer's history is logged, since it's access to personal data -
+and lazily opening the verification checklist for an application already in
+review that predates it (see open_checklist_if_needed()).
 
 Role checks are enforced at the API layer (roles_required: loan_officer or
 admin). Customer history is additionally scoped here: an officer can only
@@ -29,7 +30,7 @@ from app.models.enums import (
     UserRole,
 )
 
-from . import documents, loan_processing, prime_pricing, verification
+from . import audit, documents, loan_processing, prime_pricing, verification
 from .errors import ServiceError
 
 S = LoanApplicationStatus
@@ -235,7 +236,7 @@ def credit_assessment(a: LoanApplication) -> dict:
     }
 
 
-def open_checklist_if_needed(a: LoanApplication) -> None:
+def open_checklist_if_needed(a: LoanApplication, viewer: User) -> None:
     """The one write on a read path: an application already with its officer
     that predates the checklist (claimed before it existed, or a newly added
     item type) gets its missing PENDING rows. Idempotent. SUBMITTED and
@@ -243,8 +244,17 @@ def open_checklist_if_needed(a: LoanApplication) -> None:
     """
     if a.status in (*loan_processing.CHECKLIST_EDITABLE_STATUSES, S.RETURNED_TO_OFFICER):
         present = {i.item_type for i in a.verification_items}
-        if any(t.key not in present for t in verification.CHECKLIST):
+        missing = [t.key for t in verification.CHECKLIST if t.key not in present]
+        if missing:
             verification.ensure_checklist(a)
+            audit.record(
+                "verification_checklist_opened",
+                actor_id=viewer.id,
+                entity_type="LoanApplication",
+                entity_id=a.id,
+                details={"item_types": missing, "status": str(a.status)},
+                commit=False,
+            )
             db.session.commit()
 
 
@@ -253,9 +263,9 @@ def application_detail(a: LoanApplication, viewer: User, application_payload: di
     customer history (heavier; separate endpoint, linked here).
 
     `application_payload` is the API layer's staff serialization of the
-    application row (keeps one serializer for the core fields).
+    application row (keeps one serializer for the core fields). Call
+    open_checklist_if_needed() first (the API layer does).
     """
-    open_checklist_if_needed(a)
     return {
         "application": application_payload,
         "customer": _customer_block(a.applicant),
@@ -332,6 +342,13 @@ def customer_history(a: LoanApplication, viewer: User) -> dict:
             403,
         )
     customer = a.applicant
+    audit.record(
+        "customer_history_viewed",
+        actor_id=viewer.id,
+        entity_type="LoanApplication",
+        entity_id=a.id,
+        details={"customer_id": customer.id, "application_status": str(a.status)},
+    )
 
     previous = (
         LoanApplication.query.filter(LoanApplication.user_id == customer.id)

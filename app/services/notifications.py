@@ -1,8 +1,9 @@
 """Notifications Router - transactional email via Zoho Mail SMTP.
 
 ================================  SCOPE  ======================================
-This module is for TRANSACTIONAL NOTIFICATIONS ONLY (application received, loan
-approved/rejected, payment received, repayment due soon).
+This module is for TRANSACTIONAL NOTIFICATIONS ONLY (application received,
+more information needed, loan approved/rejected, payment received, repayment
+due soon).
 
 It must NEVER be used to deliver authentication factors - no TOTP codes, no
 password-reset tokens, no magic links, no OTPs of any kind. Per the architecture
@@ -79,6 +80,17 @@ def _money(value) -> str:
     return f"{Decimal(str(value)):,.2f}"
 
 
+def _term(obj) -> str:
+    """PRIME loans have a fixed term in days; legacy rows have months."""
+    if getattr(obj, "term_days", None):
+        return f"{obj.term_days} days"
+    if getattr(obj, "term_months", None):
+        return f"{obj.term_months} months"
+    from .prime_pricing import PRIME_TERM_DAYS
+
+    return f"{PRIME_TERM_DAYS} days"
+
+
 # --------------------------------------------------------------- event helpers
 def notify_application_received(application) -> dict:
     user = application.applicant
@@ -87,10 +99,36 @@ def notify_application_received(application) -> dict:
         "We've received your loan application",
         f"Hi {user.full_name},\n\n"
         f"Your application for {_money(application.amount_requested)} over "
-        f"{application.term_months} months has been received and is now "
+        f"{_term(application)} has been received and is now "
         f"{application.status.value.replace('_', ' ')}.\n\n"
         f"We'll email you again once a loan officer has reviewed it.\n\n"
         f"- Prime's Vault",
+    )
+
+
+def notify_customer_action_required(application, requests) -> dict:
+    """An officer needs more from the customer. Lists only the
+    customer-facing reason / required document / required information of
+    each request - NEVER the officer's internal_note.
+    """
+    user = application.applicant
+    lines = []
+    for i, r in enumerate(requests, 1):
+        line = f"  {i}. {r.reason}"
+        if r.required_document_type:
+            line += f"\n     Document needed: {r.required_document_type.value.replace('_', ' ')}"
+        if r.required_information:
+            line += f"\n     Information needed: {r.required_information}"
+        lines.append(line)
+    return send_email(
+        user.email,
+        "Action needed on your loan application",
+        f"Hi {user.full_name},\n\n"
+        f"To keep reviewing your application for {_money(application.amount_requested)}, "
+        "we need the following from you:\n\n"
+        + "\n".join(lines)
+        + "\n\nPlease sign in to your account to respond. Your application stays "
+        "on hold until you do.\n\n- Prime's Vault",
     )
 
 
@@ -105,7 +143,7 @@ def notify_loan_approved(loan) -> dict:
         f"and disbursed.\n\n"
         f"  Repayable in total: {_money(loan.total_repayable)}\n"
         f"  Installment:        {_money(loan.monthly_payment)}\n"
-        f"  Term:               {loan.term_months} months\n"
+        f"  Term:               {_term(loan)}\n"
         f"  First payment due:  {first.isoformat() if first else 'see your schedule'}\n\n"
         f"You can view your full repayment schedule in your account.\n\n"
         f"- Prime's Vault",

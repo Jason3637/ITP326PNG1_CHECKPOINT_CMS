@@ -525,16 +525,21 @@ def start_officer_review(application: LoanApplication, officer) -> LoanApplicati
     (sets assigned_officer_id) and opens its verification checklist.
     """
     _require_status(application, LoanApplicationStatus.SUBMITTED)
+    previous_officer_id = application.assigned_officer_id
     application.assigned_officer_id = officer.id
     application.assigned_at = datetime.now(timezone.utc)
-    verification.ensure_checklist(application)
+    items = verification.ensure_checklist(application)
     return _transition(
         application,
         officer,
         expected=(LoanApplicationStatus.SUBMITTED,),
         new_status=LoanApplicationStatus.OFFICER_REVIEW,
         action="loan_application_officer_review_started",
-        details={"assigned_officer_id": officer.id},
+        details={
+            "assigned_officer_id": officer.id,
+            "previous_assigned_officer_id": previous_officer_id,
+            "checklist_opened": sorted(i.item_type for i in items),
+        },
     )
 
 
@@ -641,8 +646,33 @@ def request_customer_action(
         action="loan_application_customer_action_requested",
         details={
             "requests": [
-                {"id": r.id, "request_type": r.request_type.value, "reason": r.reason} for r in rows
+                {
+                    "id": r.id,
+                    "request_type": r.request_type.value,
+                    "reason": r.reason,
+                    "required_document_type": (
+                        r.required_document_type.value if r.required_document_type else None
+                    ),
+                    "required_information": r.required_information,
+                    "internal_note": r.internal_note,
+                }
+                for r in rows
             ]
+        },
+    )
+
+    # Tell the customer (reasons only - never the officer's internal note).
+    # Best-effort and after the commit, so a mail failure can't undo the request.
+    outcome = notifications.notify_customer_action_required(application, rows)
+    audit.record(
+        "customer_action_required_notification",
+        actor_id=officer.id,
+        entity_type="LoanApplication",
+        entity_id=application.id,
+        details={
+            "request_ids": [r.id for r in rows],
+            "sent": outcome.get("sent"),
+            "reason": outcome.get("reason"),
         },
     )
     return rows
@@ -817,10 +847,11 @@ def respond_to_customer_action(
         provided_document_ids = sorted({int(d) for d in document_ids})
         changed.append("documents")
 
+    response_rows = []
     for request_id, note in notes.items():
         request = open_requests[request_id]
         request.status = InformationRequestStatus.RESPONDED
-        db.session.add(
+        response_rows.append(
             InformationResponse(
                 information_request_id=request_id,
                 responded_by=customer.id,
@@ -829,6 +860,8 @@ def respond_to_customer_action(
                 provided_document_ids=provided_document_ids,
             )
         )
+    db.session.add_all(response_rows)
+    db.session.flush()
 
     # Refresh the advisory credit-evaluation result so the officer sees
     # current numbers when they resume review - still never touches status.
@@ -848,9 +881,15 @@ def respond_to_customer_action(
         actor_id=customer.id,
         entity_type="LoanApplication",
         entity_id=application.id,
+        # Field NAMES only: the old/new values (personal details, income,
+        # referees) live once, immutably, in each InformationResponse row's
+        # field_changes - referenced here by response id, not copied.
         details={
             "request_ids": sorted(notes),
+            "response_ids": sorted(r.id for r in response_rows),
             "changed_fields": changed,
+            "changed_field_names": sorted(field_changes),
+            "provided_document_ids": provided_document_ids,
             "from": LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED.value,
             "to": LoanApplicationStatus.OFFICER_REVIEW.value,
         },
@@ -978,7 +1017,17 @@ def submit_recommendation(
             if approve
             else "loan_application_recommended_for_rejection"
         ),
-        details={"recommendation_id": rec.id, "note": comments},
+        details={
+            "recommendation_id": rec.id,
+            "recommendation": kind.value,
+            "note": comments,
+            "checklist": {
+                status: sum(1 for i in rec.checklist_snapshot if i["status"] == status)
+                for status in ("verified", "not_applicable", "failed", "pending")
+            },
+            "credit_score": (application.credit_evaluation_result or {}).get("score"),
+            "customer_verification_id": rec.customer_verification_id,
+        },
     )
     return rec
 

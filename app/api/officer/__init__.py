@@ -297,7 +297,7 @@ class ApplicationReview(Resource):
     def get(self, application_id: int):
         application = _application(application_id)
         viewer = _viewer()
-        officer_views.open_checklist_if_needed(application)
+        officer_views.open_checklist_if_needed(application, viewer)
         return officer_views.application_detail(
             application, viewer, serialize_application_staff(application)
         )
@@ -310,7 +310,7 @@ class Checklist(Resource):
     @roles_required(*_STAFF)
     def get(self, application_id: int):
         application = _application(application_id)
-        officer_views.open_checklist_if_needed(application)
+        officer_views.open_checklist_if_needed(application, _viewer())
         return verification.serialize_checklist(application)
 
 

@@ -525,8 +525,13 @@ independent of the stored `overdue` status.
 ### Notifications Router — `app/services/notifications.py`
 
 Transactional email over **Zoho Mail SMTP** (`smtplib`, no extra dependency).
-Events: `notify_application_received`, `notify_loan_approved`,
-`notify_loan_rejected`, `notify_payment_received`, `notify_repayment_due_soon`.
+Events: `notify_application_received`, `notify_customer_action_required`
+(officer requested more information — lists each request's customer-facing
+reason and required document/information, never the officer's internal note),
+`notify_loan_approved`, `notify_loan_rejected`, `notify_payment_received`,
+`notify_repayment_due_soon`. Internal workflow steps (claim, checklist,
+recommendation, admin review/return) deliberately send nothing: the customer
+only sees "Under Review" until a decision.
 Wired into `loan_processing` and `payment_processing` **after commit**, and
 best-effort: a send failure is logged and swallowed, never rolling back the
 transaction. Disabled by default (`NOTIFICATIONS_ENABLED=false`) — when disabled,
@@ -547,9 +552,36 @@ from cron / Task Scheduler (e.g. daily).
 ### Admin: audit ledger access
 
 `GET /api/reports/audit-logs` (**admin only**) — paginated, filterable:
-`page`, `per_page` (≤200), `actor_id`, `action`, `entity_type`, `date_from`,
-`date_to` (`YYYY-MM-DD` or ISO 8601). Returns
-`{page, per_page, total, pages, items[]}`.
+`page`, `per_page` (≤200), `actor_id`, `actor_role`, `action`, `entity_type`,
+`entity_id`, `date_from`, `date_to` (`YYYY-MM-DD` or ISO 8601). Returns
+`{page, per_page, total, pages, items[]}`; each item has `actor_id`,
+`actor_role` (the role **at the time** — null for system actions and for rows
+written before this column existed), `action`, `entity_type`, `entity_id`,
+`details`, `ip_address`, `created_at`. For one application's full timeline:
+`?entity_type=LoanApplication&entity_id=<id>`.
+
+`details` never holds secrets (passwords, tokens, TOTP secrets) or document
+contents — documents are referenced by id. Changed customer values (income,
+contact details, referees) are not copied into the ledger: the customer's
+response entry lists the field names and response ids, and the old/new values
+live once, immutably, in `information_responses.field_changes`.
+
+Loan Officer workflow actions (all `entity_type=LoanApplication`):
+
+| action | actor | before/after context in `details` |
+|---|---|---|
+| `loan_application_officer_review_started` | officer/admin (claim) | `from`/`to` status, `assigned_officer_id`, `previous_assigned_officer_id`, `checklist_opened` |
+| `loan_application_reassigned` | admin | `from_officer_id`, `to_officer_id` |
+| `verification_checklist_opened` | viewer | `item_types` added lazily to an application already in review |
+| `verification_item_updated` | officer/admin | `verification_item_id`, `item_type`, `from`/`to` `{status, note}` |
+| `loan_application_customer_action_requested` | officer/admin | `from`/`to` status, `requests[]` (type, reason, required document/information, internal note) |
+| `customer_action_required_notification` | officer/admin | `request_ids`, `sent`, `reason` (email outcome) |
+| `loan_application_customer_responded` | customer | `from`/`to` status, `request_ids`, `response_ids`, `changed_field_names`, `provided_document_ids` |
+| `loan_application_officer_review_resumed` | officer/admin | `from`/`to` status, `reason`, `cancelled_request_ids` |
+| `loan_application_recommended_for_approval` / `_for_rejection` | officer/admin | `from`/`to` status, `recommendation_id`, `recommendation`, `note`, `checklist` counts, `credit_score` |
+| `customer_history_viewed` | officer/admin | `customer_id`, `application_status` |
+| `loan_application_returned_to_officer` | admin | `from`/`to` status, `admin_return_id`, `recommendation_id`, `reason` |
+| `loan_application_decision` | admin | `decision`, `note`, `recommendation_id`, `overrides_recommendation`, `same_actor_as_recommender` (early exit: `early_exit`, `from`) |
 
 ### Admin: system parameters
 

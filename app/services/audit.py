@@ -6,7 +6,7 @@ from typing import Any
 from flask import has_request_context, request
 
 from app.extensions import db
-from app.models import AuditLog
+from app.models import AuditLog, User
 
 
 def client_ip() -> str | None:
@@ -31,9 +31,18 @@ def record(
     details: dict | None = None,
     commit: bool = True,
 ) -> AuditLog:
-    """Add an AuditLog row. Pass ``commit=False`` to batch it with other writes."""
+    """Add an AuditLog row. Pass ``commit=False`` to batch it with other writes.
+
+    The actor's current role is stamped on the row (``actor_role``) so the
+    ledger still shows who acted in what capacity if their role later
+    changes. Callers must keep ``details`` free of secrets (passwords,
+    tokens, TOTP secrets) and of document contents - reference documents
+    by id only.
+    """
+    actor = db.session.get(User, actor_id) if actor_id is not None else None
     entry = AuditLog(
         actor_id=actor_id,
+        actor_role=str(actor.role) if actor is not None else None,
         action=action,
         entity_type=entity_type or "auth",
         entity_id=None if entity_id is None else str(entity_id),
@@ -64,8 +73,10 @@ def query_logs(
     page: int = 1,
     per_page: int = 50,
     actor_id: int | None = None,
+    actor_role: str | None = None,
     action: str | None = None,
     entity_type: str | None = None,
+    entity_id: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> dict:
@@ -76,10 +87,14 @@ def query_logs(
     q = AuditLog.query
     if actor_id is not None:
         q = q.filter(AuditLog.actor_id == actor_id)
+    if actor_role:
+        q = q.filter(AuditLog.actor_role == actor_role)
     if action:
         q = q.filter(AuditLog.action == action)
     if entity_type:
         q = q.filter(AuditLog.entity_type == entity_type)
+    if entity_id is not None:
+        q = q.filter(AuditLog.entity_id == str(entity_id))
     if date_from:
         q = q.filter(AuditLog.created_at >= _parse_date(date_from))
     if date_to:
@@ -97,6 +112,7 @@ def query_logs(
             {
                 "id": r.id,
                 "actor_id": r.actor_id,
+                "actor_role": r.actor_role,
                 "action": r.action,
                 "entity_type": r.entity_type,
                 "entity_id": r.entity_id,
