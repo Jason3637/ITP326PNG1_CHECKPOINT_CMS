@@ -787,7 +787,12 @@ class RespondToCustomerAction(Resource):
         "one InformationResponse per answered request)",
         application_out,
     )
-    @ns.response(400, "An open request is unanswered, or a field is invalid", error_out)
+    @ns.response(
+        400,
+        "An open request is unanswered, a request that names a required_document_type "
+        "has no newly uploaded document of that type in document_ids, or a field is invalid",
+        error_out,
+    )
     @ns.response(403, "Not your application", error_out)
     @ns.response(409, "Not in CUSTOMER_ACTION_REQUIRED, or answers a request that isn't open", error_out)
     @roles_required("customer")

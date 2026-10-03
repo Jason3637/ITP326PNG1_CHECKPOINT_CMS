@@ -305,6 +305,7 @@ def test_request_more_information_and_linked_responses(client, staff, new_applic
                 {"information_request_id": second["id"], "response_note": "It is K650."},
             ],
             "monthly_income": 650,
+            "document_ids": [_workflow.uploaded_document(app_id, "proof_of_income")],
         },
     )
     assert r.status_code == 200, r.get_json()
