@@ -9,7 +9,7 @@ from sqlalchemy import func
 from app.extensions import db
 
 from .base import pg_enum
-from .enums import DocumentType
+from .enums import DocumentType, IdDocumentType
 
 
 class Document(db.Model):
@@ -41,6 +41,10 @@ class Document(db.Model):
     document_type = db.Column(
         pg_enum(DocumentType, "document_type"), nullable=False
     )
+    # Only for document_type=id_verification: which kind of ID it is.
+    # Nullable because other document types don't have one (and very old
+    # ID uploads may predate it - see migration a3f1c9e7d2b4's backfill).
+    id_document_type = db.Column(pg_enum(IdDocumentType, "id_document_type"))
     # Supabase Storage object path, e.g. "id_verification/user_42/passport.pdf".
     # NOT the file contents.
     storage_path = db.Column(db.String(1024), nullable=False)

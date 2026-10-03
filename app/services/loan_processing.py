@@ -279,6 +279,37 @@ def _parse_employment(employment_status):
         raise LoanProcessingError(f"employment_status must be one of: {allowed}.")
 
 
+# Employment statuses for which "who do you work for" has an answer (for
+# self-employed: the business name).
+_HAS_EMPLOYER = (EmploymentStatus.EMPLOYED, EmploymentStatus.SELF_EMPLOYED)
+
+
+def _parse_text(value, field: str, limit: int, *, required: bool) -> str | None:
+    text = (value or "").strip() if isinstance(value, (str, type(None))) else None
+    if text is None:
+        raise LoanProcessingError(f"{field} must be text.")
+    if not text:
+        if required:
+            raise LoanProcessingError(f"{field} is required.")
+        return None
+    if len(text) > limit:
+        raise LoanProcessingError(f"{field} must be at most {limit} characters.")
+    return text
+
+
+def _parse_residence(residential_address) -> str:
+    return _parse_text(residential_address, "residential_address", 500, required=True)
+
+
+def _parse_employer(employer_name, employment_status) -> str | None:
+    return _parse_text(
+        employer_name,
+        "employer_name",
+        255,
+        required=employment_status in _HAS_EMPLOYER,
+    )
+
+
 def submit_application(
     user,
     *,
@@ -291,6 +322,8 @@ def submit_application(
     monthly_income=None,
     employment_status: str | None = None,
     existing_monthly_debt=None,
+    residential_address: str | None = None,
+    employer_name: str | None = None,
     referees=None,
     disbursement_method_requested=None,
     disbursement_account_reference=None,
@@ -315,6 +348,8 @@ def submit_application(
     income_val = _parse_income(monthly_income)
     debt_val = _parse_debt(existing_monthly_debt)
     employment_val = _parse_employment(employment_status)
+    residence_val = _parse_residence(residential_address)
+    employer_val = _parse_employer(employer_name, employment_val)
 
     # ---- item 8: Proof of Income required at/above the named threshold ----
     if documents.proof_of_income_required(amount) and not documents.has_proof_of_income(
@@ -352,6 +387,8 @@ def submit_application(
         monthly_income=income_val,
         employment_status=employment_val,
         existing_monthly_debt=debt_val,
+        residential_address=residence_val,
+        employer_name=employer_val,
     )
     db.session.add(application)
     db.session.flush()
@@ -734,6 +771,8 @@ def respond_to_customer_action(
     monthly_income=None,
     employment_status: str | None = None,
     existing_monthly_debt=None,
+    residential_address: str | None = None,
+    employer_name: str | None = None,
     referees=None,
     disbursement_method_requested=None,
     disbursement_account_reference=None,
@@ -797,6 +836,22 @@ def respond_to_customer_action(
         _record("existing_monthly_debt", application.existing_monthly_debt, new)
         application.existing_monthly_debt = new
         changed.append("existing_monthly_debt")
+    if residential_address is not None:
+        new = _parse_residence(residential_address)
+        _record("residential_address", application.residential_address, new)
+        application.residential_address = new
+        changed.append("residential_address")
+    if employer_name is not None or (
+        employment_status is not None and application.employment_status in _HAS_EMPLOYER
+        and not application.employer_name
+    ):
+        new = _parse_employer(
+            employer_name if employer_name is not None else application.employer_name,
+            application.employment_status,
+        )
+        _record("employer_name", application.employer_name, new)
+        application.employer_name = new
+        changed.append("employer_name")
 
     if referees is not None:
         referee_rows = _parse_referees(referees)

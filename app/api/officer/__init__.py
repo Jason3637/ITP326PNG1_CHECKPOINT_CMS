@@ -156,6 +156,9 @@ review_document_out = ns.model(
         "loan_application_id": fields.Integer,
         "payment_transaction_id": fields.Integer,
         "document_type": fields.String,
+        "id_document_type": fields.String(
+            description="national_id | drivers_licence | passport | work_id (ID documents only)"
+        ),
         "storage_path": fields.String,
         "uploaded_at": fields.String,
         "is_current": fields.Boolean,
