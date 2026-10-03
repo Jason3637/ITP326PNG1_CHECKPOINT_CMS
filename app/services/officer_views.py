@@ -30,7 +30,7 @@ from app.models.enums import (
     UserRole,
 )
 
-from . import audit, documents, loan_processing, prime_pricing, verification
+from . import audit, credit_evaluation, documents, loan_processing, prime_pricing, verification
 from . import customer_verification as cv_service
 from .errors import ServiceError
 
@@ -238,12 +238,20 @@ def credit_assessment(a: LoanApplication) -> dict:
     """The interim credit model's output, wrapped so no consumer can mistake
     it for a decision. Nothing reads it to set status - see
     credit_evaluation.py's module docstring.
+
+    The stored result keeps the disclaimer it was produced with; staff are
+    always shown the current wording (credit_evaluation.DISCLAIMER). The
+    stored row - and the copy frozen on each OfficerRecommendation - is
+    left as it was.
     """
+    result = a.credit_evaluation_result
+    if result is not None:
+        result = {**result, "disclaimer": credit_evaluation.DISCLAIMER}
     return {
         "label": CREDIT_ASSESSMENT_LABEL,
         "advisory": True,
         "affects_status": False,
-        "result": a.credit_evaluation_result,
+        "result": result,
     }
 
 

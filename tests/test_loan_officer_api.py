@@ -19,7 +19,7 @@ from app.models import (
     PaymentTransaction,
     RepaymentSchedule,
 )
-from app.services import prime_pricing, verification
+from app.services import credit_evaluation, prime_pricing, verification
 
 import _workflow
 
@@ -166,10 +166,27 @@ def test_credit_assessment_is_labelled_advisory_and_staff_only(client, staff, ne
     assert assessment["label"] == "Advisory - not a decision input"
     assert assessment["advisory"] is True and assessment["affects_status"] is False
     assert assessment["result"]["algorithm"] == "interim-v2"
+    assert assessment["result"]["disclaimer"] == credit_evaluation.DISCLAIMER
     assert body["application"]["credit_assessment"] == assessment
 
     mine = client.get("/api/loans/applications/mine", headers=ch).get_json()["applications"][0]
     assert "credit_assessment" not in mine and "credit_evaluation_result" not in mine
+
+
+def test_credit_disclaimer_is_staff_wording_even_on_older_stored_results(client, staff, new_application):
+    app_id, _, _ = new_application()
+    application = db.session.get(LoanApplication, app_id)
+    old = "Interim underwriting model - ... the thresholds are still engineering guesses."
+    application.credit_evaluation_result = {**application.credit_evaluation_result, "disclaimer": old}
+    db.session.commit()
+
+    body = client.get(f"/api/officer/applications/{app_id}", headers=staff["oh"]).get_json()
+    shown = body["credit_assessment"]["result"]["disclaimer"]
+    assert shown.startswith("Advisory assessment only.") and "engineering" not in shown
+    db.session.expire_all()
+    assert db.session.get(LoanApplication, app_id).credit_evaluation_result["disclaimer"] == old, (
+        "the stored result is left as it was"
+    )
 
 
 def test_documents_include_unlinked_id_documents(client, staff, new_application):
