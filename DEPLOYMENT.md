@@ -17,10 +17,19 @@ release: flask --app run.py db upgrade
   never used in production; it only runs when `run.py` is executed directly.
   `gunicorn` cannot run on Windows (`fcntl`); local dev on Windows uses
   `flask run`. Railway is Linux, so gunicorn runs there.
-- **`release`** runs Alembic migrations before the new release goes live. If your
-  Railway plan doesn't execute the `release` process, set the service's
-  **Pre-Deploy Command** to `flask --app run.py db upgrade` instead (or run it
-  once manually via `railway run flask --app run.py db upgrade`).
+- **`release` is NOT run by Railway.** Migrations run through the service's
+  **Pre-Deploy Command**, set in the Railway dashboard (service → **Settings →
+  Deploy → Pre-Deploy Command**): `flask --app run.py db upgrade`. It runs
+  before each new version goes live; if a migration fails, the deploy stops
+  and the previous version keeps serving. It's a dashboard setting on
+  purpose: the `railway.json` `preDeployCommand` was resolved to null on
+  every deployment and never ran (check a deployment's
+  `serviceManifest.deploy.preDeployCommand` in `railway deployment list
+  --json` - it must not be null). **Back up the database before merging
+  anything that adds a migration** - nothing asks first.
+  To run migrations by hand (e.g. from a Windows dev machine):
+  `.\venv\Scripts\python.exe -m flask --app run.py db upgrade` from the repo
+  folder (the local `.env` points at the same database).
 - `WEB_CONCURRENCY` (worker count) and `PORT` are provided/overridable by Railway.
 
 ## Python version
@@ -79,16 +88,21 @@ that creates a `loan_officer` or `admin` account. See
 
 ## Scheduled job
 
-`scripts/send_due_reminders.py` runs two daily maintenance jobs (see its
-docstring and `app/services/repayments_scheduler.py`):
+`scripts/send_due_reminders.py` runs three daily maintenance jobs (see its
+docstring, `app/services/repayments_scheduler.py` and
+`app/services/customer_verification.py`):
 
 1. Flips any `RepaymentSchedule` row whose due date has passed with no full
    payment to `overdue` (proactive - the on-read overdue computation in
    `reporting.py`/`accounts.py` stays as a safety net if this is delayed).
-2. Emails each borrower with an installment due within
+2. Marks customer verifications past `valid_until` as invalidated
+   (`expired`). Until this runs, an expired verification already stops
+   counting as "Verified customer" - this just makes the record say so.
+3. Emails each borrower with an installment due within
    `REPAYMENT_REMINDER_LEAD_DAYS` days.
 
-Both are audited (`repayment_marked_overdue`, `repayment_reminder_sent` /
+All are audited (`repayment_marked_overdue`,
+`customer_verification_invalidated`, `repayment_reminder_sent` /
 `repayment_reminder_not_sent`). Today it only runs when invoked manually -
 nothing schedules it yet. **Set one of the following up:**
 
