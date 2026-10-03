@@ -51,6 +51,9 @@ EXPECTED_ENDPOINTS = {
     ("get", "/officer/applications/{application_id}/checklist"),
     ("patch", "/officer/applications/{application_id}/checklist/{item_type}"),
     ("get", "/officer/applications/{application_id}/customer-history"),
+    # Customer verification
+    ("post", "/officer/applications/{application_id}/customer-verification/invalidate"),
+    ("post", "/admin/customer-verifications/invalidate-outdated"),
 }
 
 # Endpoints that take a JSON body and must declare a body model.

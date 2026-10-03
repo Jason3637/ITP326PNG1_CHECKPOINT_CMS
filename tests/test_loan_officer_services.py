@@ -31,6 +31,8 @@ from app.models.enums import (
 from app.services import loan_processing, verification
 from app.services.errors import ServiceError
 
+import _workflow
+
 S = LoanApplicationStatus
 
 
@@ -50,7 +52,10 @@ def _claimed(customer, officer, amount="500") -> LoanApplication:
 
 def _complete(application, officer):
     for t in verification.CHECKLIST:
-        verification.update_item(application, officer, t.key, status="verified", note="ok")
+        verification.update_item(
+            application, officer, t.key, status="verified", note="ok",
+            evidence=_workflow.evidence_for(application.id, t.key),
+        )
 
 
 def _items(application):

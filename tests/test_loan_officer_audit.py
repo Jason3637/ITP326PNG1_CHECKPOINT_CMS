@@ -15,6 +15,8 @@ from app.extensions import db
 from app.models import AuditLog, User
 from app.models.enums import UserRole
 
+import _workflow
+
 
 @pytest.fixture
 def flow(client, make_user, auth_header, apply_payload, workflow):
@@ -38,7 +40,7 @@ def flow(client, make_user, auth_header, apply_payload, workflow):
         client.patch(
             f"/api/officer/applications/{app_id}/checklist/valid_id",
             headers=oh,
-            json={"status": "verified", "note": "NID checked."},
+            json={"status": "verified", "note": "NID checked.", "id_document_id": _workflow.id_document_for(app_id)},
         )
         r = client.post(
             f"/api/loans/applications/{app_id}/request-action",

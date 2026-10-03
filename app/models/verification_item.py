@@ -16,7 +16,7 @@ from sqlalchemy import func
 
 from app.extensions import db
 
-from .base import pg_enum
+from .base import JSONType, pg_enum
 from .enums import VerificationItemStatus
 
 
@@ -48,6 +48,11 @@ class VerificationItem(db.Model):
         server_default=VerificationItemStatus.PENDING.value,
     )
     note = db.Column(db.String(1000))
+    # What the officer recorded with a VERIFIED check, where the check needs
+    # data and not just a tick: age_18_plus -> {"date_of_birth"},
+    # valid_id -> {"id_document_id", "id_document_type", "id_expiry_date"}.
+    # These two together become the customer-level CustomerVerification.
+    evidence = db.Column(JSONType)
     # NO ACTION (not SET NULL): a checked item must keep naming its checker.
     checked_by = db.Column(db.Integer, db.ForeignKey("users.id"))
     checked_at = db.Column(db.DateTime(timezone=True))

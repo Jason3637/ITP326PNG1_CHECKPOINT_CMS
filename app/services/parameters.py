@@ -38,6 +38,12 @@ _SPEC: dict[str, tuple[str, str, str]] = {
         "rate",
         "Max (existing debt + new installment) / income, as a fraction (credit evaluation, interim model).",
     ),
+    "customer_verification_validity_months": (
+        "CUSTOMER_VERIFICATION_VALIDITY_MONTHS",
+        "int",
+        "Months a customer verification stays valid (capped at the ID's expiry). "
+        "12 is an engineering default awaiting Prime's Vault confirmation.",
+    ),
 }
 
 PARAMETER_KEYS = tuple(_SPEC)

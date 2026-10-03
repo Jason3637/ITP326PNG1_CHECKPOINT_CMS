@@ -35,10 +35,32 @@ checklist_update_in = ns.model(
         "status": fields.String(required=True, enum=_ITEM_STATUSES, example="verified"),
         "note": fields.String(
             required=False,
-            example="Checked against NID card; DOB 1990-05-01.",
+            example="Checked against NID card.",
             description="Required for failed and not_applicable (max 1000).",
         ),
+        "date_of_birth": fields.String(
+            required=False,
+            example="1990-05-01",
+            description="age_18_plus + status=verified only, and then REQUIRED: the DOB read off the ID "
+            "(YYYY-MM-DD, must be 18+). Saved on the customer.",
+        ),
+        "id_document_id": fields.Integer(
+            required=False,
+            example=41,
+            description="valid_id + status=verified only, and then REQUIRED: which of the customer's "
+            "current ID documents was checked.",
+        ),
+        "id_expiry_date": fields.String(
+            required=False,
+            example="2030-01-31",
+            description="valid_id + status=verified: the ID's expiry date, if it has one (caps how long "
+            "the customer verification stays valid).",
+        ),
     },
+)
+reverify_in = ns.model(
+    "RequestReverificationInput",
+    {"note": fields.String(required=True, example="Customer reports a new national ID card.")},
 )
 
 # --------------------------------------------------------------- response models
@@ -101,7 +123,14 @@ checklist_item_out = ns.model(
         "checked_by": fields.Integer,
         "checked_by_name": fields.String,
         "checked_at": fields.String,
-        "customer_verification_id": fields.Integer,
+        "customer_verification_id": fields.Integer(
+            description="Set when this check is backed by a customer verification (created from it, "
+            "or carried over from an earlier one)."
+        ),
+        "evidence": fields.Raw(
+            description='What a verified identity check recorded: {"date_of_birth"} or '
+            '{"id_document_id", "id_document_type", "id_expiry_date"}.'
+        ),
     },
 )
 checklist_summary_out = ns.model(
@@ -131,9 +160,14 @@ customer_verification_out = ns.model(
         "id": fields.Integer,
         "verified_at": fields.String,
         "verified_by": fields.Integer,
+        "status": fields.String(example="verified"),
         "valid_until": fields.String,
         "date_of_birth": fields.String,
         "id_document_id": fields.Integer,
+        "verified_by_name": fields.String,
+        "id_expiry_date": fields.String,
+        "policy_version": fields.String,
+        "source_application_id": fields.Integer,
     },
 )
 review_customer_out = ns.model(
@@ -145,7 +179,14 @@ review_customer_out = ns.model(
         "phone_number": fields.String,
         "member_since": fields.String,
         "is_active": fields.Boolean,
-        "verification": fields.Nested(customer_verification_out, allow_null=True),
+        "date_of_birth": fields.String(
+            description="Recorded by an officer from the ID; shown whether or not a verification is current."
+        ),
+        "verification": fields.Nested(
+            customer_verification_out,
+            allow_null=True,
+            description="The customer's current verification - the only source of the 'Verified customer' flag.",
+        ),
     },
 )
 review_document_out = ns.model(
@@ -334,11 +375,40 @@ class ChecklistItem(Resource):
         data = request.get_json(silent=True) or {}
         try:
             loan_processing.update_checklist_item(
-                application, _viewer(), item_type, status=data.get("status"), note=data.get("note")
+                application,
+                _viewer(),
+                item_type,
+                status=data.get("status"),
+                note=data.get("note"),
+                evidence={
+                    k: data[k] for k in ("date_of_birth", "id_document_id", "id_expiry_date") if k in data
+                },
             )
         except ServiceError as exc:
             abort(exc.status_code, exc.message)
         return verification.serialize_checklist(application)
+
+
+@ns.route("/applications/<int:application_id>/customer-verification/invalidate")
+class RequestReverification(Resource):
+    @ns.doc(security="Bearer")
+    @ns.expect(reverify_in)
+    @ns.response(
+        200, "Current verification invalidated (staff_requested); identity checks re-opened", review_customer_out
+    )
+    @ns.response(400, "note is required", error_out)
+    @ns.response(403, "Assigned to another officer", error_out)
+    @ns.response(409, "The customer has no current verification", error_out)
+    @roles_required(*_STAFF)
+    def post(self, application_id: int):
+        application = _application(application_id)
+        try:
+            loan_processing.request_customer_reverification(
+                application, _viewer(), (request.get_json(silent=True) or {}).get("note")
+            )
+        except ServiceError as exc:
+            abort(exc.status_code, exc.message)
+        return officer_views.customer_block(application.applicant)
 
 
 @ns.route("/applications/<int:application_id>/customer-history")
