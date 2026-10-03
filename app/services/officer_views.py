@@ -31,6 +31,7 @@ from app.models.enums import (
 )
 
 from . import audit, documents, loan_processing, prime_pricing, verification
+from . import customer_verification as cv_service
 from .errors import ServiceError
 
 S = LoanApplicationStatus
@@ -180,7 +181,7 @@ def _allowed_actions(a: LoanApplication, viewer: User) -> list[str]:
     return actions
 
 
-def _customer_block(user: User) -> dict:
+def customer_block(user: User) -> dict:
     cv = loan_processing.current_customer_verification(user.id)
     return {
         "id": user.id,
@@ -189,16 +190,26 @@ def _customer_block(user: User) -> dict:
         "phone_number": user.phone_number,
         "member_since": _iso(user.created_at),
         "is_active": user.is_active,
+        # From the customer record (recorded by an officer from the ID), so
+        # it shows whether or not a verification is currently valid.
+        "date_of_birth": user.date_of_birth.isoformat() if user.date_of_birth else None,
+        # The ONLY source of the "Verified customer" flag: a VERIFIED,
+        # unexpired CustomerVerification (customer_verification.current()).
         "verification": (
             None
             if cv is None
             else {
                 "id": cv.id,
+                "status": cv.status.value,
                 "verified_at": _iso(cv.verified_at),
                 "verified_by": cv.verified_by,
+                "verified_by_name": cv.verifier.full_name if cv.verifier else None,
                 "valid_until": cv.valid_until.isoformat(),
                 "date_of_birth": cv.date_of_birth.isoformat(),
                 "id_document_id": cv.id_document_id,
+                "id_expiry_date": cv.id_expiry_date.isoformat() if cv.id_expiry_date else None,
+                "policy_version": cv.policy_version,
+                "source_application_id": cv.source_application_id,
             }
         ),
     }
@@ -255,6 +266,10 @@ def open_checklist_if_needed(a: LoanApplication, viewer: User) -> None:
                 details={"item_types": missing, "status": str(a.status)},
                 commit=False,
             )
+        # A customer verified (on another application) since this checklist
+        # opened: carry it over to identity checks still pending here.
+        carried = cv_service.carry_over(a, viewer)
+        if missing or carried:
             db.session.commit()
 
 
@@ -268,7 +283,7 @@ def application_detail(a: LoanApplication, viewer: User, application_payload: di
     """
     return {
         "application": application_payload,
-        "customer": _customer_block(a.applicant),
+        "customer": customer_block(a.applicant),
         "documents": _documents_block(a),
         "information_requests": [
             loan_processing.serialize_information_request(r, staff=True)

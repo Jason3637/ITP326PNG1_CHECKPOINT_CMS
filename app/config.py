@@ -112,6 +112,20 @@ class Config:
     # version they were recorded against.
     CURRENT_POLICY_VERSION = os.environ.get("CURRENT_POLICY_VERSION", "2026-09-v1")
 
+    # --- Customer verification (Loan Officer workflow) ---
+    # How long a customer-level verification stays valid (capped at the ID's
+    # expiry). 12 months is an ENGINEERING DEFAULT awaiting Prime's Vault
+    # confirmation - admin-tunable via PUT /api/admin/parameters
+    # (customer_verification_validity_months).
+    CUSTOMER_VERIFICATION_VALIDITY_MONTHS = int(
+        os.environ.get("CUSTOMER_VERIFICATION_VALIDITY_MONTHS", "12")
+    )
+    # Bump to invalidate every verification made under an older policy
+    # (POST /api/admin/customer-verifications/invalidate-outdated).
+    CUSTOMER_VERIFICATION_POLICY_VERSION = os.environ.get(
+        "CUSTOMER_VERIFICATION_POLICY_VERSION", "2026-10-v1"
+    )
+
     # --- CORS (separately-hosted Next.js frontend) ------------------------
     # Comma-separated list of allowed origins. Dev defaults cover the Next.js
     # dev server; set CORS_ORIGINS to the deployed frontend URL(s) in prod.

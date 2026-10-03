@@ -53,6 +53,7 @@ MATRIX: dict[tuple[str, str], frozenset] = {
     ("PATCH", "/api/officer/applications/<int:application_id>/checklist/<string:item_type>"): STAFF,
     ("GET", "/api/officer/applications/<int:application_id>/customer-history"): STAFF,
     ("POST", "/api/payments/<int:transaction_id>/start-verification"): STAFF,
+    ("POST", "/api/officer/applications/<int:application_id>/customer-verification/invalidate"): STAFF,
     # --- Administrator only -----------------------------------------------
     ("POST", "/api/loans/applications/<int:application_id>/assign"): ADMIN,
     ("POST", "/api/loans/applications/<int:application_id>/admin-review"): ADMIN,
@@ -66,6 +67,7 @@ MATRIX: dict[tuple[str, str], frozenset] = {
     ("GET", "/api/admin/parameters"): ADMIN,
     ("PUT", "/api/admin/parameters"): ADMIN,
     ("GET", "/api/reports/audit-logs"): ADMIN,
+    ("POST", "/api/admin/customer-verifications/invalidate-outdated"): ADMIN,
     # --- shared -----------------------------------------------------------
     ("POST", "/api/payments/repay"): EVERYONE,  # customer: own loan; staff: counter entry
     ("GET", "/api/payments/loan/<int:loan_id>"): EVERYONE,  # customer: own loan only
@@ -173,7 +175,7 @@ def test_admin_is_refused_on_customer_only_routes(client, headers, method, rule)
 def test_every_loan_officer_route_is_closed_to_customers():
     officer_routes = {k for k, roles in MATRIX.items() if roles == STAFF}
     assert officer_routes <= set(_forbidden(C))
-    assert len(officer_routes) == 13  # 12 workflow routes + member documents
+    assert len(officer_routes) == 14  # 13 workflow routes + member documents
 
 
 # ---------------------------------------- 3. allowed roles get past RBAC

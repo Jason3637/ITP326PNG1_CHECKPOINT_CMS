@@ -205,3 +205,5 @@ class CustomerVerificationInvalidationReason(enum.StrEnum):
     INFORMATION_CHANGED = "information_changed"
     STAFF_REQUESTED = "staff_requested"
     POLICY_UPDATED = "policy_updated"
+    # Replaced by a newer verification of the same customer (re-verified).
+    SUPERSEDED = "superseded"

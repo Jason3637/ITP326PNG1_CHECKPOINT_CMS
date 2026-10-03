@@ -21,6 +21,8 @@ from app.models import (
 )
 from app.services import prime_pricing, verification
 
+import _workflow
+
 
 @pytest.fixture
 def staff(make_user, auth_header):
@@ -203,7 +205,7 @@ def test_checklist_items_update_individually_with_who_and_when(client, staff, ne
     r = client.patch(
         f"/api/officer/applications/{app_id}/checklist/valid_id",
         headers=oh,
-        json={"status": "verified", "note": "NID card checked."},
+        json={"status": "verified", "note": "NID card checked.", "id_document_id": _workflow.id_document_for(app_id)},
     )
     assert r.status_code == 200, r.get_json()
     items = {i["item_type"]: i for i in r.get_json()["items"]}

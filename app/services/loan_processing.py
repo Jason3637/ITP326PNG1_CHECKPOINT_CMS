@@ -27,7 +27,7 @@ officer role, but each action stays a separate, separately audited call -
 nothing here combines "recommend" and "decide".
 """
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
@@ -45,7 +45,6 @@ from app.models import (
     User,
 )
 from app.models.enums import (
-    CustomerVerificationStatus,
     DisbursementMethod,
     DocumentType,
     EmploymentStatus,
@@ -60,6 +59,7 @@ from app.models.enums import (
 )
 
 from . import audit, credit_evaluation, documents, notifications, prime_pricing, verification
+from . import customer_verification as cv_service
 from .errors import ServiceError
 
 _OPEN_APPLICATION_STATUSES = (
@@ -413,6 +413,10 @@ def submit_application(
     if document_ids:
         documents.link_documents_to_application(document_ids, user, application.id)
 
+    # Contact details that differ from what the customer was verified with
+    # mean the verification no longer describes them.
+    cv_service.check_information_changed(application)
+
     # Credit Evaluation is advisory only - it computes and stores a result
     # for a human to read but never sets application.status (see item 5 /
     # credit_evaluation.py's module docstring).
@@ -548,12 +552,7 @@ def serialize_information_request(r: InformationRequest, *, staff: bool) -> dict
 
 def current_customer_verification(user_id: int) -> CustomerVerification | None:
     """The customer's VERIFIED, not-yet-expired customer-level verification, if any."""
-    row = CustomerVerification.query.filter_by(
-        user_id=user_id, status=CustomerVerificationStatus.VERIFIED
-    ).first()
-    if row is None or row.valid_until < date.today():
-        return None
-    return row
+    return cv_service.current(user_id)
 
 
 # ------------------------------------------------------------------ claim
@@ -566,6 +565,9 @@ def start_officer_review(application: LoanApplication, officer) -> LoanApplicati
     application.assigned_officer_id = officer.id
     application.assigned_at = datetime.now(timezone.utc)
     items = verification.ensure_checklist(application)
+    # A returning customer with a current verification doesn't redo the
+    # identity checks - they're marked verified from it (and linked).
+    carried = cv_service.carry_over(application, officer)
     return _transition(
         application,
         officer,
@@ -576,6 +578,7 @@ def start_officer_review(application: LoanApplication, officer) -> LoanApplicati
             "assigned_officer_id": officer.id,
             "previous_assigned_officer_id": previous_officer_id,
             "checklist_opened": sorted(i.item_type for i in items),
+            "identity_checks_carried_over": sorted(i.item_type for i in carried),
         },
     )
 
@@ -820,6 +823,7 @@ def respond_to_customer_action(
         application.confirmed_email = email
         application.confirmed_phone_number = phone_number
         changed.append("personal_details")
+        cv_service.check_information_changed(application)
 
     if monthly_income is not None:
         new = _parse_income(monthly_income)
@@ -1004,12 +1008,57 @@ def resume_officer_review(
 
 # --------------------------------------------------------- verification
 def update_checklist_item(
-    application: LoanApplication, officer, item_type: str, *, status, note: str | None = None
+    application: LoanApplication,
+    officer,
+    item_type: str,
+    *,
+    status,
+    note: str | None = None,
+    evidence: dict | None = None,
 ):
-    """Assigned loan_officer or admin, while the application is with the officer."""
+    """Assigned loan_officer or admin, while the application is with the officer.
+
+    Completing both identity checks (age 18+ with the DOB, valid ID with the
+    document) creates the customer-level verification; undoing one that a
+    verification came from invalidates it - same transaction as the check.
+    """
     _require_status(application, *CHECKLIST_EDITABLE_STATUSES)
     _require_assignee(application, officer)
-    return verification.update_item(application, officer, item_type, status=status, note=note)
+    verification.ensure_checklist(application)
+    item = next((i for i in application.verification_items if i.item_type == item_type), None)
+    previous_status = item.status if item else None
+    previous_verification_id = item.customer_verification_id if item else None
+    item = verification.update_item(
+        application, officer, item_type, status=status, note=note, evidence=evidence, commit=False
+    )
+    cv_service.sync_after_item_change(
+        application,
+        officer,
+        item,
+        previous_status=previous_status,
+        previous_verification_id=previous_verification_id,
+    )
+    db.session.commit()
+    return item
+
+
+def request_customer_reverification(application: LoanApplication, officer, note: str):
+    """Assigned loan_officer or admin: invalidate the customer's current
+    verification (STAFF_REQUESTED) and re-open this application's identity
+    checks if they came from it."""
+    _require_assignee(application, officer)
+    row = cv_service.request_reverification(application, officer, note)
+    db.session.commit()
+    return row
+
+
+def invalidate_outdated_customer_verifications(admin) -> int:
+    """admin only: POLICY_UPDATED for every verification made under an older
+    CUSTOMER_VERIFICATION_POLICY_VERSION."""
+    _require_admin(admin, "invalidate verifications for a policy change")
+    count = cv_service.invalidate_outdated_policy(admin)
+    db.session.commit()
+    return count
 
 
 # ------------------------------------------------------- recommendation

@@ -34,7 +34,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app import create_app
-from app.services import repayments_scheduler
+from app.extensions import db
+from app.services import customer_verification, repayments_scheduler
 
 
 def main() -> int:
@@ -44,6 +45,10 @@ def main() -> int:
         print(f"Overdue sweep: {len(overdue)} installment(s) newly marked overdue.")
         for row in overdue:
             print(f"  installment {row.id} (loan {row.loan_id}, was due {row.due_date})")
+
+        expired = customer_verification.expire_due()
+        db.session.commit()
+        print(f"Customer verifications expired: {len(expired)}.")
 
         results = repayments_scheduler.send_due_soon_reminders()
         sent = sum(1 for r in results if r["outcome"].get("sent"))

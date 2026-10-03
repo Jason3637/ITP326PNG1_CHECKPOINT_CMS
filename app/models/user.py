@@ -22,6 +22,10 @@ class User(db.Model):
     )
     full_name = db.Column(db.String(255), nullable=False)
     phone_number = db.Column(db.String(32))
+    # Read off the customer's ID by a loan officer at the "Age 18+ verified"
+    # check - never self-reported. Kept on the user (not only on the
+    # verification) so it still shows after a verification expires.
+    date_of_birth = db.Column(db.Date)
     created_at = db.Column(
         db.DateTime(timezone=True), nullable=False, server_default=func.now()
     )
