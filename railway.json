@@ -1,6 +1,8 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "preDeployCommand": "flask --app run.py db upgrade"
+    "preDeployCommand": [
+      "flask --app run.py db upgrade"
+    ]
   }
 }
