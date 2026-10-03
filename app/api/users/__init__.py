@@ -21,6 +21,12 @@ upload_parser.add_argument("file", type=FileStorage, location="files", required=
 upload_parser.add_argument("document_type", location="form", required=True,
                            choices=("id_verification", "receipt", "loan_file", "proof_of_income"))
 upload_parser.add_argument("loan_application_id", type=int, location="form", required=False)
+upload_parser.add_argument(
+    "id_document_type", location="form", required=False,
+    choices=("national_id", "drivers_licence", "passport", "work_id"),
+    help="Which kind of ID - for document_type=id_verification (required unless the "
+         "filename starts with '<id type>-', which older clients send).",
+)
 
 # --------------------------------------------------------------- response models
 error_out = ns.model("ErrorResponse", {"message": fields.String})
@@ -44,6 +50,10 @@ document_out = ns.model(
         "user_id": fields.Integer,
         "loan_application_id": fields.Integer,
         "document_type": fields.String(example="id_verification"),
+        "id_document_type": fields.String(
+            example="national_id",
+            description="national_id | drivers_licence | passport | work_id - id_verification documents only",
+        ),
         "storage_path": fields.String(description="Supabase Storage object path (bytes never in Postgres)"),
         "uploaded_at": fields.String,
         "is_current": fields.Boolean(
@@ -116,6 +126,7 @@ class Documents(Resource):
                 data=data,
                 content_type=file.mimetype,
                 loan_application_id=args.get("loan_application_id"),
+                id_document_type=args.get("id_document_type"),
             )
         except ServiceError as exc:
             abort(exc.status_code, exc.message)

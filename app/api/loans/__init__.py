@@ -86,6 +86,17 @@ apply_in = ns.model(
             example=0,
             description="Other recurring monthly debt obligations, if any. Defaults to 0 if omitted.",
         ),
+        "residential_address": fields.String(
+            required=True,
+            example="Section 12, Lot 4, Gerehu Stage 2, Port Moresby, NCD",
+            description="Where the applicant lives (max 500).",
+        ),
+        "employer_name": fields.String(
+            required=False,
+            example="Bank South Pacific",
+            description="Who the applicant works for (business name if self-employed). "
+            "Required when employment_status is employed or self_employed (max 255).",
+        ),
         "referees": fields.List(
             fields.Nested(referee_in), required=True, description="At least one required."
         ),
@@ -165,6 +176,8 @@ respond_in = ns.model(
             required=False, enum=["employed", "self_employed", "unemployed", "retired", "student"]
         ),
         "existing_monthly_debt": fields.Float(required=False),
+        "residential_address": fields.String(required=False, description="Max 500."),
+        "employer_name": fields.String(required=False, description="Max 255."),
         "referees": fields.List(
             fields.Nested(referee_in),
             required=False,
@@ -230,6 +243,11 @@ pricing_out = ns.model(
         "category": fields.String(example="PRIME 2"),
         "amount": fields.Float,
         "interest_amount": fields.Float,
+        "interest_rate": fields.Float(
+            example=0.4,
+            description="The tier's flat rate for the whole term as a fraction (0.40 = 40% over "
+            "term_days) - not an annual rate. interest_amount is this rate applied, rounded to whole Kina.",
+        ),
         "total_repayable": fields.Float,
         "term_days": fields.Integer,
     },
@@ -310,6 +328,12 @@ application_out = ns.model(
         "monthly_income": fields.Float,
         "employment_status": fields.String,
         "existing_monthly_debt": fields.Float,
+        "residential_address": fields.String(
+            description="Self-reported at submission. Null only on applications made before it was collected."
+        ),
+        "employer_name": fields.String(
+            description="Self-reported at submission; null when not employed/self-employed, or on older applications."
+        ),
         "disbursement_method_requested": fields.String,
         "disbursement_account_reference": fields.String,
         "referees": fields.List(fields.Nested(referee_out)),
@@ -474,6 +498,7 @@ def serialize_application(a: LoanApplication) -> dict:
                 "category": pricing["category"],
                 "amount": _num(pricing["amount"]),
                 "interest_amount": _num(pricing["interest_amount"]),
+                "interest_rate": _num(pricing["rate"]),
                 "total_repayable": _num(pricing["total_repayable"]),
                 "term_days": pricing["term_days"],
             }
@@ -481,6 +506,8 @@ def serialize_application(a: LoanApplication) -> dict:
         "monthly_income": _num(a.monthly_income),
         "employment_status": str(a.employment_status) if a.employment_status else None,
         "existing_monthly_debt": _num(a.existing_monthly_debt),
+        "residential_address": a.residential_address,
+        "employer_name": a.employer_name,
         "disbursement_method_requested": (
             str(a.disbursement_method_requested) if a.disbursement_method_requested else None
         ),
@@ -610,6 +637,8 @@ class LoanApply(Resource):
                 monthly_income=data.get("monthly_income"),
                 employment_status=data.get("employment_status"),
                 existing_monthly_debt=data.get("existing_monthly_debt"),
+                residential_address=data.get("residential_address"),
+                employer_name=data.get("employer_name"),
                 referees=data.get("referees"),
                 disbursement_method_requested=data.get("disbursement_method_requested"),
                 disbursement_account_reference=data.get("disbursement_account_reference"),
@@ -653,6 +682,7 @@ class PrimePreview(Resource):
             "category": pricing["category"],
             "amount": _num(pricing["amount"]),
             "interest_amount": _num(pricing["interest_amount"]),
+            "interest_rate": _num(pricing["rate"]),
             "total_repayable": _num(pricing["total_repayable"]),
             "term_days": pricing["term_days"],
         }
@@ -777,6 +807,8 @@ class RespondToCustomerAction(Resource):
                 monthly_income=data.get("monthly_income"),
                 employment_status=data.get("employment_status"),
                 existing_monthly_debt=data.get("existing_monthly_debt"),
+                residential_address=data.get("residential_address"),
+                employer_name=data.get("employer_name"),
                 referees=data.get("referees"),
                 disbursement_method_requested=data.get("disbursement_method_requested"),
                 disbursement_account_reference=data.get("disbursement_account_reference"),

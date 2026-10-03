@@ -84,6 +84,17 @@ class LoanApplication(db.Model):
     # debt-to-income check. Defaults to 0 (assumed no other debt) when omitted.
     existing_monthly_debt = db.Column(db.Numeric(12, 2), nullable=True)
 
+    # ------------------------------------------- applicant details for review
+    # Point-in-time, self-reported at submission (like confirmed_* above),
+    # for the loan officer's identity / employment checks. Required by the
+    # service layer for new applications - residence always, employer when
+    # the applicant is employed or self-employed (their business name).
+    # Nullable only because applications submitted before these were
+    # collected don't have them (an officer can ask via Request More
+    # Information; the customer's respond() can supply them).
+    residential_address = db.Column(db.String(500))
+    employer_name = db.Column(db.String(255))
+
     # Populated by the credit-evaluation engine (score, flags, reasons). See
     # app/services/credit_evaluation.py for exactly what "algorithm" means.
     credit_evaluation_result = db.Column(JSONType)

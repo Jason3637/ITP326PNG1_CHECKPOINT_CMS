@@ -121,6 +121,18 @@ class DocumentType(enum.StrEnum):
     PROOF_OF_INCOME = "proof_of_income"
 
 
+class IdDocumentType(enum.StrEnum):
+    """Which kind of ID an id_verification Document is. The apply form has
+    always asked for this; before it had a column, it survived only as a
+    filename prefix (see documents.infer_id_document_type()).
+    """
+
+    NATIONAL_ID = "national_id"
+    DRIVERS_LICENCE = "drivers_licence"
+    PASSPORT = "passport"
+    WORK_ID = "work_id"
+
+
 class DisbursementMethod(enum.StrEnum):
     BSP_MOBILE_BANKING = "bsp_mobile_banking"
     CASH_ON_HAND = "cash_on_hand"

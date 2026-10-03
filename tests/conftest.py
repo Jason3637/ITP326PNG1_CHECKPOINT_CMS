@@ -108,6 +108,8 @@ def apply_payload(app):
             "confirmed_full_name": "Test Customer",
             "confirmed_email": "test-customer@example.com",
             "confirmed_phone_number": "+675 7123 4567",
+            "residential_address": "Section 12, Lot 4, Gerehu Stage 2, Port Moresby, NCD",
+            "employer_name": "Bank South Pacific",
             "referees": [
                 {
                     "full_name": "Maria Kaupa",

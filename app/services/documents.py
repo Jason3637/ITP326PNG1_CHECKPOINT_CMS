@@ -15,7 +15,7 @@ from flask import current_app
 
 from app.extensions import db
 from app.models import Document, User
-from app.models.enums import DocumentType, UserRole
+from app.models.enums import DocumentType, IdDocumentType, UserRole
 from app.storage import supabase_storage
 
 from . import audit
@@ -43,6 +43,38 @@ def proof_of_income_required(amount_requested) -> bool:
     must already be uploaded and linked before the application can submit.
     """
     return Decimal(str(amount_requested)) >= PROOF_OF_INCOME_REQUIRED_ABOVE
+
+
+# The apply form names an uploaded ID "<id type>-<original name>" (it had no
+# other way to send the ID type before id_document_type existed), so the
+# type is recoverable from the filename - for older frontends still doing
+# only that, and for the migration backfilling existing rows.
+_ID_TYPE_PREFIX = re.compile(
+    r"(?:^|[/_])(" + "|".join(t.value for t in IdDocumentType) + r")-", re.IGNORECASE
+)
+
+
+def infer_id_document_type(name: str | None) -> IdDocumentType | None:
+    match = _ID_TYPE_PREFIX.search(name or "")
+    return IdDocumentType(match.group(1).lower()) if match else None
+
+
+def _parse_id_document_type(doc_type: DocumentType, id_document_type, filename) -> IdDocumentType | None:
+    if doc_type != DocumentType.ID_VERIFICATION:
+        if id_document_type:
+            raise ServiceError("id_document_type only applies to id_verification documents.")
+        return None
+    if id_document_type:
+        try:
+            return IdDocumentType(id_document_type)
+        except ValueError:
+            allowed = ", ".join(t.value for t in IdDocumentType)
+            raise ServiceError(f"id_document_type must be one of: {allowed}.")
+    inferred = infer_id_document_type(filename)
+    if inferred is None:
+        allowed = ", ".join(t.value for t in IdDocumentType)
+        raise ServiceError(f"id_document_type is required for an ID document ({allowed}).")
+    return inferred
 
 
 def _safe_filename(raw: str | None, extension: str) -> str:
@@ -108,12 +140,14 @@ def upload_document(
     data: bytes,
     content_type: str | None,
     loan_application_id: int | None = None,
+    id_document_type: str | None = None,
 ) -> Document:
     try:
         doc_type = DocumentType(document_type)
     except ValueError:
         allowed = ", ".join(t.value for t in DocumentType)
         raise ServiceError(f"document_type must be one of: {allowed}.")
+    id_type = _parse_id_document_type(doc_type, id_document_type, filename)
 
     ctype = (content_type or "").split(";")[0].strip().lower()
     if ctype not in ALLOWED_TYPES:
@@ -152,6 +186,7 @@ def upload_document(
         user_id=owner.id,
         loan_application_id=loan_application_id,
         document_type=doc_type,
+        id_document_type=id_type,
         storage_path=storage_path,
     )
     db.session.add(document)
@@ -163,6 +198,7 @@ def upload_document(
         entity_id=document.id,
         details={
             "document_type": doc_type.value,
+            "id_document_type": id_type.value if id_type else None,
             "storage_path": storage_path,
             "content_type": ctype,
             "size_bytes": size,
@@ -211,6 +247,7 @@ def serialize(document: Document) -> dict:
         "loan_application_id": document.loan_application_id,
         "payment_transaction_id": document.payment_transaction_id,
         "document_type": str(document.document_type),
+        "id_document_type": str(document.id_document_type) if document.id_document_type else None,
         "storage_path": document.storage_path,
         "uploaded_at": document.uploaded_at.isoformat() if document.uploaded_at else None,
         "is_current": document.superseded_by_id is None,
