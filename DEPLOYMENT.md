@@ -90,23 +90,35 @@ to hand each new hire.
 
 ## Scheduled job
 
-`scripts/send_due_reminders.py` runs three daily maintenance jobs (see its
-docstring, `app/services/repayments_scheduler.py` and
-`app/services/customer_verification.py`):
+`scripts/send_due_reminders.py` runs the daily maintenance jobs (see its
+docstring, `app/services/penalties.py`, `app/services/repayments_scheduler.py`
+and `app/services/customer_verification.py`). "Today" is the Port Moresby
+date throughout.
 
 1. Flips any `RepaymentSchedule` row whose due date has passed with no full
-   payment to `overdue` (proactive - the on-read overdue computation in
-   `reporting.py`/`accounts.py` stays as a safety net if this is delayed).
-2. Marks customer verifications past `valid_until` as invalidated
+   payment to `overdue`.
+2. **Late penalties and loan status** (`penalties.run`): adds each penalty
+   tier now due as a ledger entry (+25% of the original interest at 7 days
+   late, a further +100% at 14 days, from the loan's locked policy version),
+   and sets each loan ACTIVE/OVERDUE (overdue = past the snapshot due date
+   with the ledger still owing). Running it twice never double-charges: the
+   ledger allows one penalty entry per loan per tier. Each run is a
+   `scheduled_job_runs` row with a summary.
+3. Marks customer verifications past `valid_until` as invalidated
    (`expired`). Until this runs, an expired verification already stops
    counting as "Verified customer" - this just makes the record say so.
-3. Emails each borrower with an installment due within
+4. Emails each borrower with an installment due within
    `REPAYMENT_REMINDER_LEAD_DAYS` days.
 
-All are audited (`repayment_marked_overdue`,
-`customer_verification_invalidated`, `repayment_reminder_sent` /
-`repayment_reminder_not_sent`). Today it only runs when invoked manually -
-nothing schedules it yet. **Set one of the following up:**
+All are audited (`repayment_marked_overdue`, `loan_penalty_applied`,
+`loan_status_changed`, `customer_verification_invalidated`,
+`repayment_reminder_sent` / `repayment_reminder_not_sent`).
+
+In production it runs as the Railway service **`scheduled-jobs`**: start
+command `python scripts/send_due_reminders.py`, cron `0 20 * * *` (20:00 UTC
+= 06:00 Port Moresby, just after a tier's day begins), restart policy
+*never*, deployed from `main` with `DATABASE_URL` and the mail settings
+referenced from the main service. Setting it up from scratch:
 
 ### Option A: Railway Cron Schedule (recommended, no extra infra)
 

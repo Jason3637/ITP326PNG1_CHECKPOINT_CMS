@@ -1,6 +1,5 @@
 """Account tracking - the customer dashboard read model."""
 
-from datetime import date
 from decimal import Decimal
 
 from app.models import Loan
@@ -30,6 +29,18 @@ def _loan_progress(loan: Loan) -> dict:
     )
     next_due = upcoming[0] if upcoming else None
 
+    # What is owed comes from the ledger, so late-payment penalties show up
+    # (the schedule row only ever holds the original amount). Loans from
+    # before the ledger existed fall back to their installments.
+    from . import ledger
+
+    if loan.ledger_entries:
+        totals = ledger.totals(loan.id)
+        penalties = totals["penalties"]
+        total_due = totals["original_obligation"] + penalties
+        total_paid = totals["verified_repayments"]
+    else:
+        penalties = Decimal("0")
     pct = float((total_paid / total_due * 100).quantize(Decimal("0.1"))) if total_due else 0.0
 
     return {
@@ -43,6 +54,7 @@ def _loan_progress(loan: Loan) -> dict:
         "installments_paid": paid_count,
         "installments_overdue": overdue_count,
         "amount_paid": float(total_paid.quantize(_CENTS)),
+        "penalties": float(penalties.quantize(_CENTS)),
         "amount_remaining": float((total_due - total_paid).quantize(_CENTS)),
         "progress_percent": pct,
         "disbursed_at": loan.disbursed_at.isoformat() if loan.disbursed_at else None,
@@ -55,7 +67,7 @@ def _loan_progress(loan: Loan) -> dict:
                 "amount_due": float(Decimal(next_due.amount_due)),
                 "amount_paid": float(Decimal(next_due.amount_paid)),
                 "status": str(next_due.status),
-                "days_until_due": (next_due.due_date - date.today()).days,
+                "days_until_due": (next_due.due_date - ledger.today_local()).days,
             }
         ),
     }

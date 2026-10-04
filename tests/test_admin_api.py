@@ -223,15 +223,22 @@ def test_verification_posts_the_ledger_and_closes_at_zero(client, people, apply_
     assert r.status_code == 200 and r.get_json()["outstanding"] == 400.0
     assert client.post(f"/api/admin/repayments/{first}/verify", headers=people["ah"]).status_code == 409
 
-    too_much = _report(client, people, loan_id, 500)
-    assert client.post(f"/api/admin/repayments/{too_much}/verify", headers=people["ah"]).status_code == 409
-    assert client.post(f"/api/admin/repayments/{too_much}/reject", headers=people["ah"], json={}).status_code == 400
-    r = client.post(f"/api/admin/repayments/{too_much}/reject", headers=people["ah"],
-                    json={"reason": "Amount doesn't match the receipt."})
+    # More than is owed is refused when it's reported...
+    row = db.session.get(Loan, loan_id).repayment_schedule[0]
+    r = client.post("/api/payments/repay", headers=people["ch"], json={
+        "repayment_schedule_id": row.id, "amount": 500, "payment_method": "cash"})
+    assert r.status_code == 400
+    # ...and at verification, when two reports each fit but not together.
+    a, b = _report(client, people, loan_id, 300), _report(client, people, loan_id, 300)
+    assert client.post(f"/api/admin/repayments/{a}/verify", headers=people["ah"]).status_code == 200
+    assert client.post(f"/api/admin/repayments/{b}/verify", headers=people["ah"]).status_code == 409
+    assert client.post(f"/api/admin/repayments/{b}/reject", headers=people["ah"], json={}).status_code == 400
+    r = client.post(f"/api/admin/repayments/{b}/reject", headers=people["ah"],
+                    json={"reason": "Duplicate of an earlier payment."})
     assert r.status_code == 200
-    assert LoanLedgerEntry.query.filter_by(payment_transaction_id=too_much).count() == 0
+    assert LoanLedgerEntry.query.filter_by(payment_transaction_id=b).count() == 0
 
-    last = _report(client, people, loan_id, 400)
+    last = _report(client, people, loan_id, 100)
     r = client.post(f"/api/admin/repayments/{last}/verify", headers=people["ah"])
     assert r.status_code == 200 and r.get_json()["loan_completed"] is True
 
@@ -242,7 +249,7 @@ def test_verification_posts_the_ledger_and_closes_at_zero(client, people, apply_
     assert detail["closure"]["closure_reason"] == "paid_in_full"
     assert detail["closure"]["closing_payment_transaction_id"] == last
     assert detail["closure"]["timeliness"] == "on_time"
-    assert [p["status"] for p in detail["payments"]] == ["verified", "rejected", "verified"]
+    assert [p["status"] for p in detail["payments"]] == ["verified", "verified", "rejected", "verified"]
     assert {"loan_disbursed", "payment_verified", "payment_rejected", "loan_closed"} <= {
         a["action"] for a in detail["audit_history"]}
     assert LoanClosure.query.filter_by(loan_id=loan_id).count() == 1

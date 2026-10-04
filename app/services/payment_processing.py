@@ -72,7 +72,16 @@ def record_payment(
 
     if loan.status not in (LoanStatus.ACTIVE, LoanStatus.OVERDUE):
         raise ServiceError(f"Loan #{loan.id} is {loan.status.value}, not active.", 409)
-    if schedule.status == RepaymentStatus.PAID:
+    from . import ledger
+
+    # The ledger says what is owed - including any late-payment penalty, which
+    # the schedule row (original amount only) doesn't know about. A loan with
+    # entries but nothing owing can't take a payment; one with no entries yet
+    # (the old amortized product) falls back to its installment.
+    owing = ledger.balance(loan.id) if loan.ledger_entries else None
+    if owing is not None and owing <= 0:
+        raise ServiceError(f"Nothing is owed on loan #{loan.id}.", 409)
+    if owing is None and schedule.status == RepaymentStatus.PAID:
         raise ServiceError(
             f"Installment #{schedule.installment_number} is already paid.", 409
         )
@@ -83,12 +92,16 @@ def record_payment(
         raise ServiceError("amount must be a number.")
     if pay_amount <= 0:
         raise ServiceError("amount must be positive.")
+    if owing is not None and pay_amount > owing:
+        raise ServiceError(
+            f"That is more than the K{owing:,.2f} still owed on this loan.", 400
+        )
 
     method = (payment_method or "").strip()
     if not method:
         raise ServiceError("payment_method is required.")
 
-    today = date.today()
+    today = ledger.today_local()
     if payment_date is None:
         pay_date = today
     else:
@@ -185,7 +198,7 @@ def verify_payment(
     Nothing commits until every step has succeeded; any error rolls back all
     of it. Emails go out only after the commit.
     """
-    from . import closures, ledger, repayments_scheduler  # local: avoid circular imports
+    from . import closures, ledger, penalties, repayments_scheduler  # local: avoid circular imports
 
     if actor.role != UserRole.ADMIN:
         raise ServiceError("Only an admin may verify or reject a payment.", 403)
@@ -227,6 +240,7 @@ def verify_payment(
         if loan.status not in (LoanStatus.ACTIVE, LoanStatus.OVERDUE):
             raise ServiceError(f"Loan #{loan.id} is {loan.status.value}; nothing is owed on it.", 409)
         pay_amount = Decimal(txn.amount).quantize(_CENTS)
+        penalties.assess_before_verification(loan)  # tiers already due go on first
         outstanding = ledger.balance(loan.id)
         if pay_amount > outstanding:
             raise ServiceError(

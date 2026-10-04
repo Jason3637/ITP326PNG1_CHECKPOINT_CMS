@@ -53,7 +53,12 @@ def _multi_chart(labels, series: dict):
 
 
 def _is_overdue(row) -> bool:
-    return row.status != RepaymentStatus.PAID and row.due_date < date.today()
+    """On-read check, kept as the safety net for the stored status (the
+    daily job may not have run yet today). Same rule and same Port Moresby
+    date as penalties.is_overdue()."""
+    from . import ledger
+
+    return row.status != RepaymentStatus.PAID and row.due_date < ledger.today_local()
 
 
 def _last_months(n: int) -> list[str]:
