@@ -1,140 +1,159 @@
 # Staff Onboarding (loan_officer / admin)
 
-Public registration (`POST /api/auth/register`) always creates a `customer`
-account — that's deliberate, see BACKEND.md → *Authentication flow*. Staff
-accounts (`loan_officer` / `admin`) are created by an administrator:
+How a new Loan Officer or Administrator gets an account, and how an admin
+resets a staff password.
 
-- **Normally — over the API, by a signed-in admin** (Swagger at `/api/docs`
-  until an Administrator UI exists):
-  - `POST /api/admin/staff` `{"email", "full_name", "role": "loan_officer" | "admin", "phone_number"?, "is_active"?}`
-    → the new account plus a generated `temporary_password`, shown **once**
-    in that response only (not stored in plaintext, not logged, never
-    returned again).
-  - `POST /api/admin/staff/<id>/reset-password` → a new `temporary_password`
-    for an existing staff account; the old password stops working at once
-    and they are signed out everywhere (every session issued before the
-    reset is rejected).
-    Their MFA enrolment is kept, so they sign in with the new password and
-    their existing authenticator.
-  - Both are audited (`staff_account_created`, `staff_password_reset`) with
-    the admin as actor — never the password.
-- **Bootstrapping the first admin** (or if no admin can sign in) — run
-  `scripts/seed_staff.py` directly against the database, as below.
+Customers sign themselves up in the web app; that path only ever creates
+`customer` accounts. Staff accounts are always created by an administrator,
+and every staff member sets up two-factor login (an authenticator app) the
+first time they sign in, exactly as customers do.
 
-Either way the person then completes MFA enrollment themselves through the
-normal public flow (section 2) — the exact same flow a customer goes through,
-so they end up on identical security footing (MFA mandatory, backup codes,
-audited).
+- **Web app:** https://primesvault.vercel.app
+- **API docs (Swagger):** https://itp326png1checkpointcms-production.up.railway.app/api/docs
+  — there is no Administrator screen in the web app yet, so admins create
+  accounts and reset passwords here.
 
-Repeat this for every new hire.
+## 1. An admin creates the account
 
-## 1. Seed the account
+### Signing in to Swagger
 
-`scripts/seed_staff.py` is a standalone CLI script — it is **not** a route,
-nothing about it is reachable over HTTP. It:
+Swagger needs an admin access token:
 
-1. Hashes a temporary password with `app.services.security.hash_password` —
-   the identical function `/api/auth/register` uses (`pbkdf2:sha256`).
-2. Inserts the `User` row directly with `totp_enabled=False`, so the account
-   lands in exactly the state a fresh customer registration would.
-3. Writes one `staff_account_created` audit-log row so the seed action itself
-   is traceable.
+1. Open the API docs and expand **auth → POST /auth/login**. Choose **Try it
+   out**, enter your admin email and password, and **Execute**. The response
+   contains an `mfa_challenge_token`.
+2. Click **Authorize** (top right), enter `Bearer ` followed by that
+   `mfa_challenge_token`, and close the dialog.
+3. Expand **POST /auth/mfa/verify-login**, enter the 6-digit code from your
+   authenticator app as `code`, and **Execute**. The response contains your
+   `access_token`.
+4. Click **Authorize** again, **Logout**, then enter `Bearer ` followed by the
+   `access_token`. It's valid for one hour.
 
-It does **not** touch MFA — the staff member sets that up themselves in step 2.
+### Creating the account
 
-**Run it against production**, from a machine with the Railway CLI linked to
-this project (`npm i -g @railway/cli && railway login`), so it picks up the
-real `DATABASE_URL` without you ever pasting production credentials into a
-local `.env`:
+1. Expand **admin → POST /admin/staff**, choose **Try it out**, and fill in:
+   - `email` — their work email (this is their username)
+   - `full_name`
+   - `role` — `loan_officer` or `admin` (`customer` is refused)
+   - optionally `phone_number`; leave `is_active` as `true`
+2. **Execute.** The response contains the new account and a
+   `temporary_password`.
+3. **Copy the temporary password now.** It is shown in this one response
+   only: it isn't stored in readable form, isn't logged, and no other screen
+   or endpoint will show it again. If it's lost, reset the password
+   (section 3).
+
+The action is recorded in the audit log as `staff_account_created`, with you
+as the actor. The password is never recorded.
+
+### Handing it over
+
+Give the new staff member their email and temporary password over a private
+channel: a password-manager share, a phone call, or in person. Never by
+plain email or chat. Tell them to have an authenticator app ready (Google
+Authenticator, Microsoft Authenticator, Authy or 1Password).
+
+There is no way for staff to change their own password yet, so the
+temporary password stays their password until an admin resets it.
+
+### Fallback: the first admin
+
+Creating staff in Swagger needs an admin to sign in. To create the **first**
+admin, or if no admin can sign in, the dev team runs
+`scripts/seed_staff.py` against the production database instead. It creates
+the same kind of account, prints a temporary password once, and records a
+`staff_account_created` audit entry (with no actor, and the operator's name
+in `details.created_by`). From a machine with the Railway CLI linked to this
+project:
 
 ```bash
 railway run --service ITP326PNG1_CHECKPOINT_CMS \
   python scripts/seed_staff.py \
   --email jane@primesvault.pg \
   --full-name "Jane Officer" \
-  --role loan_officer \
+  --role admin \
   --created-by "your.name@primesvault.pg"
 ```
 
-- `--role` only accepts `loan_officer` or `admin` — `customer` is rejected by
-  design; use the real registration endpoint for customers.
-- Omit `--password` to have a secure one generated for you (recommended) — it
-  is printed once to your terminal and **never** written to a file, log, or
-  the audit trail. Add `--password '<value>'` only if you need to set a
-  specific one.
-- Add `--yes` to skip the interactive confirmation (useful if you're scripting
-  several hires at once).
-- The command prints the masked DB target before asking you to confirm — check
-  it says the Supabase production host, not a local SQLite fallback, before
-  typing `yes`.
+The script shows the database it's about to write to and asks for
+confirmation; check it names the Supabase production host before typing
+`yes`. Then hand over the password and continue with section 2, exactly as
+for an account made in Swagger.
 
-**Hand the temp password to the person over a secure, private channel** —
-password manager share, verbal call, a secrets vault link. Never plain email
-or chat. This step matters more than usual here: there is no self-service
-password change yet (see *Known limitations* below), so this temporary
-password is their real password until an admin resets it.
+## 2. The new staff member signs in and sets up two-factor login
 
-## 2. They complete enrollment (exactly like a customer would)
+Send them these steps. Everything happens in the web app.
 
-Send the new staff member these steps (or point them at BACKEND.md's curl
-walkthrough — it's the identical sequence customers use):
+1. **Go to https://primesvault.vercel.app and choose Log in.** Enter your work
+   email and the temporary password you were given.
+2. **Set up two-factor login.** Because this is your first sign-in, the app
+   says your account hasn't finished two-factor setup and shows a QR code.
+   Open your authenticator app, add a new account, and scan the code. If you
+   can't scan it, open **Can't scan the code?** and type the key shown into
+   your app instead.
+3. **Confirm it works.** Enter the 6-digit code your authenticator app now
+   shows for Prime's Vault, and choose **Verify and enable MFA**.
+4. **Save your backup codes.** The app shows ten one-time backup codes, once
+   only. Store them somewhere safe and private (a password manager is
+   ideal). Each one lets you sign in once if you lose your phone. Then
+   choose **I've saved my backup codes**.
+5. **Sign in again.** You're taken back to the login form. Enter your email
+   and password, then the current 6-digit code from your authenticator app.
+   You land in the staff area, where your role (Loan Officer or Admin)
+   decides what you can see and do.
 
-```bash
-BASE=https://<railway-domain>/api/auth
+From then on, every sign-in is email, password, then a code from the
+authenticator app. If the phone isn't available, choose **Use a backup code
+instead** on the code screen.
 
-# 1. Login with the temp password -> not enrolled yet, so mfa_setup_token comes back
-curl -s -X POST $BASE/login -H 'Content-Type: application/json' -d '{
-  "email": "jane@primesvault.pg", "password": "<temp password>"}'
-# -> 403 { "mfa_required": "setup", "mfa_setup_token": "<S>" }
+If they close the browser part-way through setup, nothing is lost: signing
+in again with the temporary password restarts setup with a fresh QR code.
 
-# 2. Get a TOTP secret + QR
-curl -s -X POST $BASE/mfa/setup -H "Authorization: Bearer <S>"
-# -> { "totp_secret": "...", "provisioning_uri": "otpauth://...", "qr_code_png": "data:image/png;base64,..." }
-# Scan the QR (or enter the secret manually) in Google Authenticator / Authy / 1Password.
+### Checking it worked (optional, admin)
 
-# 3. Confirm enrollment with the 6-digit code -> MFA enabled, backup codes issued once
-curl -s -X POST $BASE/mfa/verify-setup -H "Authorization: Bearer <S>" \
-  -H 'Content-Type: application/json' -d '{"code": "123456"}'
-# -> { "backup_codes": ["RB3WG-88UFA", ...] }   <-- they must store these now
+In Swagger, **reports → GET /reports/audit-logs** with `actor_id` set to the
+new account's id shows the sign-up sequence: `login_mfa_setup_required` →
+`mfa_setup_initiated` → `mfa_enabled` → `login_password_verified` →
+`login_success`.
 
-# 4. Log in for real
-curl -s -X POST $BASE/login -H 'Content-Type: application/json' -d '{
-  "email": "jane@primesvault.pg", "password": "<temp password>"}'
-# -> 200 { "mfa_required": "challenge", "mfa_challenge_token": "<C>" }
+## 3. Resetting a staff password
 
-curl -s -X POST $BASE/mfa/verify-login -H "Authorization: Bearer <C>" \
-  -H 'Content-Type: application/json' -d '{"code": "123456"}'
-# -> { "access_token": "<A>", "refresh_token": "<R>", "role": "loan_officer" }
-```
+Use this when a staff member has forgotten their password, or you think
+someone else may know it.
 
-The JWT's `role` claim now reflects whatever `--role` you seeded — every
-`@roles_required("loan_officer")` / `@roles_required("admin")` endpoint works
-immediately, no further setup.
+1. Sign in to Swagger as an admin (section 1).
+2. Expand **admin → POST /admin/staff/{user_id}/reset-password**, enter the
+   staff member's account id (shown when the account was created, and in
+   the audit log), and **Execute**.
+3. Copy the new `temporary_password` from the response. As with a new
+   account, it is shown once only. Hand it over privately.
 
-## 3. Verify the audit trail
+What a reset does:
 
-As an existing admin, confirm the whole sequence landed in the ledger:
+- The old password stops working immediately.
+- The staff member is **signed out everywhere**: every session they had
+  open, on any device, ends.
+- Their two-factor setup is **kept**. They sign in with the new password and
+  the same authenticator app (or a backup code). They don't set it up again.
+  If they never finished setting it up, they're asked to on their next
+  sign-in, as in section 2.
 
-```bash
-curl -s "$BASE/../reports/audit-logs?actor_id=<their user_id>" \
-  -H "Authorization: Bearer <admin access_token>"
-```
-
-Expect, in order: `login_mfa_setup_required` → `mfa_setup_initiated` →
-`mfa_enabled` → `login_password_verified` → `login_success`. Separately,
-`GET /api/reports/audit-logs?action=staff_account_created` shows the seed
-step itself — `actor_id` is `null` there (no authenticated user runs the CLI
-script), with the operator's identity in `details.created_by` instead.
+Resets work only on staff accounts (`loan_officer` / `admin`), not
+customers. Each one is recorded in the audit log as `staff_password_reset`,
+with you as the actor. The password is never recorded.
 
 ## Known limitations
 
+- **No Administrator screens yet.** Creating staff and resetting passwords
+  is done in Swagger until the web app has an Administrator area.
 - **No self-service password change.** Staff can't change their own
-  password; an admin resets it (`POST /api/admin/staff/<id>/reset-password`)
-  and hands over the new temporary one. Customers have no reset path at all
+  password; an admin resets it. Customers have no password reset at all
   yet.
-- **No endpoint to deactivate an account yet.** A reset signs the account
-  out everywhere, but to keep someone out entirely (e.g. they've left) set
-  `users.is_active = false` in the database for now — inactive accounts can't
-  log in or refresh.
-- **No Administrator UI yet** — the admin endpoints are used through
-  Swagger (`/api/docs`) or an API client for now.
+- **No way to deactivate an account yet.** A reset signs someone out, but
+  to keep a person out for good (for example, they've left), the dev team
+  sets `users.is_active = false` in the database. Deactivated accounts can't
+  sign in.
+- **Lost authenticator and no backup codes.** There is no admin action to
+  clear someone's two-factor setup yet; it needs the dev team to reset it in
+  the database.
