@@ -12,6 +12,14 @@ app's actual route table.
 
 The deeper "against a real record in the right status" checks for the
 admin-only actions are in test_loan_officer_rbac.py.
+
+Notes on STAFF routes: the role check is all there is for the read-only
+officer views. In particular customer-history is TEAM-WIDE on purpose - any
+loan_officer may view it for any open application, not just ones they
+claimed (test_customer_history_is_team_wide_for_loan_officers in
+test_loan_officer_api.py). The write actions that ARE limited to the
+assignee (checklist, request info, resume, recommend) enforce that in the
+service layer (`_require_assignee`).
 """
 
 import re
@@ -51,7 +59,7 @@ MATRIX: dict[tuple[str, str], frozenset] = {
     ("GET", "/api/officer/applications/<int:application_id>"): STAFF,
     ("GET", "/api/officer/applications/<int:application_id>/checklist"): STAFF,
     ("PATCH", "/api/officer/applications/<int:application_id>/checklist/<string:item_type>"): STAFF,
-    ("GET", "/api/officer/applications/<int:application_id>/customer-history"): STAFF,
+    ("GET", "/api/officer/applications/<int:application_id>/customer-history"): STAFF,  # team-wide, see notes
     ("POST", "/api/payments/<int:transaction_id>/start-verification"): STAFF,
     ("POST", "/api/officer/applications/<int:application_id>/customer-verification/invalidate"): STAFF,
     # --- Administrator only -----------------------------------------------

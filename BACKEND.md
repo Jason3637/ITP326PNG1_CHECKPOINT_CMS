@@ -311,7 +311,7 @@ any open status --admin early exit--> REJECTED
 | Close a paid loan; write off a loan | — | ❌ | ✅ |
 | System parameters; audit logs | — | ❌ | ✅ |
 
-\* Loan officers reach customer history only through an application that is still open — there is no customer-id lookup.
+\* Loan officers reach customer history only through an application that is still open — there is no customer-id lookup. Within that, visibility is **team-wide by design**: any loan officer may view it for any open application, not only ones claimed by them (pinned by `test_customer_history_is_team_wide_for_loan_officers`).
 Admin-only actions are checked at the route **and** in the service layer (`loan_processing._require_admin`, `payment_processing.verify_payment`), covered by `tests/test_loan_officer_rbac.py`. An admin may act in the officer role (claim, recommend) and then decide, but each is a separate, separately audited call; the decision's audit entry records `same_actor_as_recommender` and `overrides_recommendation`.
 
 ### Endpoints

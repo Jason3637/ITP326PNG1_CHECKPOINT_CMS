@@ -349,6 +349,10 @@ def customer_history(a: LoanApplication, viewer: User) -> dict:
     """History of the customer behind application `a`. Loan officers may
     only use this while `a` is open (in the review pipeline) - a decided
     application is not a handle for browsing a customer. Admins: always.
+
+    Intentionally team-wide: there is no assignee check - any loan officer
+    may view history for any open application, claimed by them, by another
+    officer, or by no one. Every view is audited (`customer_history_viewed`).
     """
     if viewer.role != UserRole.ADMIN and a.status not in loan_processing.OPEN_APPLICATION_STATUSES:
         raise ServiceError(

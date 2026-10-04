@@ -551,6 +551,14 @@ def test_customer_history_summarises_this_customer(client, staff, new_applicatio
     assert body["loans"][0]["installments"]["paid_late"] == 1
 
 
+def test_customer_history_is_team_wide_for_loan_officers(client, staff, new_application):
+    """By design, not a bug: an officer who neither created nor claimed the
+    application (it's claimed by someone else) may still view the history."""
+    app_id, _, _ = new_application()
+    _claim(client, app_id, staff["oh"])
+    assert client.get(f"/api/officer/applications/{app_id}/customer-history", headers=staff["xh"]).status_code == 200
+
+
 def test_customer_history_is_scoped_to_open_applications_for_officers(client, staff, new_application):
     app_id, _, _ = new_application()
     _claim(client, app_id, staff["oh"])

@@ -411,6 +411,13 @@ class RequestReverification(Resource):
         return officer_views.customer_block(application.applicant)
 
 
+# Visibility is TEAM-WIDE by design: any loan_officer may view the history
+# behind any open application, not only ones assigned to / claimed by them -
+# officers cover for each other and check a customer before claiming. The
+# only limits are "application still open" (in the service) and the audit
+# entry every view leaves. Not a missing assignee check - don't add one
+# without a product decision (pinned by
+# test_customer_history_is_team_wide_for_loan_officers).
 @ns.route("/applications/<int:application_id>/customer-history")
 class CustomerHistory(Resource):
     @ns.doc(security="Bearer")
