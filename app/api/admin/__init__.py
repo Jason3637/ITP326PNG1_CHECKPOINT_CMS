@@ -197,7 +197,8 @@ class StaffPasswordReset(Resource):
     @ns.doc(
         security="Bearer",
         description="Replace a staff account's password with a new temporary one; the old password "
-        "stops working immediately. MFA enrolment is kept - they still sign in with their "
+        "stops working immediately and every existing session is signed out (all tokens issued "
+        "before the reset are rejected). MFA enrolment is kept - they still sign in with their "
         "authenticator. Audited as staff_password_reset (the password is never logged).",
     )
     @ns.response(200, "Reset - the temporary password is in this response only", staff_credentials_out)

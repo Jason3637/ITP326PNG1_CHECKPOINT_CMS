@@ -184,11 +184,11 @@ def test_both_actions_are_audited_without_the_password(client, admin):
 def test_temporary_password_is_never_returned_by_a_later_get(client, admin):
     created = _create(client, admin["h"]).get_json()
     temp = created["temporary_password"]
-    _, tokens = _first_login_with_mfa_setup(client, "jane.officer@test.local", temp)
-    staff_h = _bearer(tokens["access_token"])
     reset_temp = client.post(_reset_url(created["user"]["id"]), headers=admin["h"]).get_json()[
         "temporary_password"
     ]
+    _, tokens = _first_login_with_mfa_setup(client, "jane.officer@test.local", reset_temp)
+    staff_h = _bearer(tokens["access_token"])
 
     gets = [
         client.get("/api/auth/me", headers=staff_h),
@@ -201,3 +201,40 @@ def test_temporary_password_is_never_returned_by_a_later_get(client, admin):
         text = r.get_data(as_text=True)
         assert temp not in text and reset_temp not in text, r.request.path
         assert "temporary_password" not in text and "password_hash" not in text, r.request.path
+
+
+# ------------------------------------------------- reset signs out everywhere
+def test_reset_revokes_every_existing_session(client, admin, make_user, auth_header):
+    created = _create(client, admin["h"]).get_json()
+    user_id, old = created["user"]["id"], created["temporary_password"]
+    secret, tokens = _first_login_with_mfa_setup(client, "jane.officer@test.local", old)
+    access_h, refresh_h = _bearer(tokens["access_token"]), _bearer(tokens["refresh_token"])
+    pending = _login(client, "jane.officer@test.local", old).get_json()["mfa_challenge_token"]
+    bystander_h = auth_header(make_user("loan_officer"))
+    assert client.get("/api/auth/me", headers=access_h).status_code == 200
+
+    new = client.post(_reset_url(user_id), headers=admin["h"]).get_json()["temporary_password"]
+
+    assert client.get("/api/auth/me", headers=access_h).status_code == 401
+    assert client.post("/api/auth/refresh", headers=refresh_h).status_code == 401
+    code = {"code": pyotp.TOTP(secret).now()}
+    assert client.post("/api/auth/mfa/verify-login", headers=_bearer(pending), json=code).status_code == 401
+    assert client.get("/api/auth/me", headers=bystander_h).status_code == 200, "other users unaffected"
+    assert client.get("/api/auth/me", headers=admin["h"]).status_code == 200
+
+    r = _login(client, "jane.officer@test.local", new)
+    r = client.post("/api/auth/mfa/verify-login", headers=_bearer(r.get_json()["mfa_challenge_token"]), json=code)
+    assert r.status_code == 200
+    assert client.get("/api/auth/me", headers=_bearer(r.get_json()["access_token"])).status_code == 200
+    entry = AuditLog.query.filter_by(action="staff_password_reset", entity_id=str(user_id)).one()
+    assert entry.details["sessions_revoked"] is True
+
+
+def test_tokens_issued_before_token_versions_existed_still_work(app, client, make_user):
+    """No "tv" claim counts as version 0 - deploying this signs nobody out."""
+    from flask_jwt_extended import create_access_token
+
+    user = make_user("loan_officer")
+    with app.test_request_context():
+        legacy = create_access_token(identity=str(user.id), additional_claims={"scope": "access", "role": "loan_officer"})
+    assert client.get("/api/auth/me", headers=_bearer(legacy)).status_code == 200

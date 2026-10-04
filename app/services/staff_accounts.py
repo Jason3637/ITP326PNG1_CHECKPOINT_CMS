@@ -102,7 +102,9 @@ def create_staff_account(
 
 def reset_staff_password(admin: User, user_id: int) -> tuple[User, str]:
     """Admin only. Replaces a staff account's password with a new temporary
-    one - the old password stops working immediately. MFA enrolment (TOTP
+    one - the old password stops working immediately, and bumping
+    `token_version` signs the account out everywhere (every access, refresh
+    and MFA step token issued before is rejected). MFA enrolment (TOTP
     secret, backup codes) is deliberately left as it is: a forgotten
     password isn't a lost authenticator, and keeping MFA means the
     temporary password alone still can't sign anyone in.
@@ -116,6 +118,7 @@ def reset_staff_password(admin: User, user_id: int) -> tuple[User, str]:
 
     temp_password = generate_temp_password()
     user.password_hash = security.hash_password(temp_password)
+    user.token_version = (user.token_version or 0) + 1
     audit.record(
         "staff_password_reset",
         actor_id=admin.id,
@@ -125,6 +128,7 @@ def reset_staff_password(admin: User, user_id: int) -> tuple[User, str]:
             "email": user.email,
             "role": user.role.value,
             "mfa_enrolment_kept": bool(user.totp_enabled),
+            "sessions_revoked": True,
         },
         commit=False,
     )

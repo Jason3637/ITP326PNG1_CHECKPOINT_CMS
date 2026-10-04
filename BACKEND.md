@@ -120,6 +120,12 @@ Token types (all JWT, distinguished by a `scope` claim):
 | `access_token` | 1 hour | every protected endpoint (`scope=access`, carries `role`) |
 | `refresh_token` | 30 days | `POST /api/auth/refresh` |
 
+Every token also carries `tv`, the user's `users.token_version` when it was
+issued. A token whose `tv` doesn't match the current version is rejected as
+revoked (401) - an admin password reset bumps the version, signing that user
+out of every session. Tokens without `tv` (issued before it existed) count as
+version 0.
+
 ### Endpoints
 
 | Method | Path | Auth | Purpose |
@@ -602,11 +608,12 @@ Loan Officer workflow actions (all `entity_type=LoanApplication`):
   seeded accounts.
 - A reset keeps MFA enrolment (TOTP secret and backup codes): a forgotten
   password isn't a lost authenticator, and the temporary password alone
-  still can't sign anyone in. It does **not** revoke refresh tokens already
-  issued (30 days), and there is no deactivate endpoint yet - see
-  STAFF_ONBOARDING.md → *Known limitations*.
+  still can't sign anyone in. It **does** sign the account out everywhere:
+  `token_version` is bumped, so every access, refresh and MFA step token
+  issued before the reset is rejected. There is no deactivate endpoint yet -
+  see STAFF_ONBOARDING.md → *Known limitations*.
 - Audited as `staff_account_created` (`email`, `role`, `is_active`) and
-  `staff_password_reset` (`email`, `role`, `mfa_enrolment_kept`), actor =
+  `staff_password_reset` (`email`, `role`, `mfa_enrolment_kept`, `sessions_revoked`), actor =
   the admin, `entity_type=User`.
 
 ### Admin: system parameters
