@@ -81,10 +81,12 @@ optional with sensible defaults (see `.env.example`).
 
 ## Staff accounts (loan_officer / admin)
 
-Public registration is customer-only by design — there is no HTTP endpoint
-that creates a `loan_officer` or `admin` account. See
-[STAFF_ONBOARDING.md](STAFF_ONBOARDING.md) for the seeding script
-(`scripts/seed_staff.py`) and the enrollment steps to hand each new hire.
+Public registration is customer-only by design. A signed-in admin creates
+`loan_officer` / `admin` accounts and resets their passwords over the API
+(`POST /api/admin/staff`, `POST /api/admin/staff/<id>/reset-password`); the
+first admin is bootstrapped with `scripts/seed_staff.py`. See
+[STAFF_ONBOARDING.md](STAFF_ONBOARDING.md) for both and the enrollment steps
+to hand each new hire.
 
 ## Scheduled job
 

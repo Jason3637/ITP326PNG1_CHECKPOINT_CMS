@@ -76,6 +76,8 @@ MATRIX: dict[tuple[str, str], frozenset] = {
     ("PUT", "/api/admin/parameters"): ADMIN,
     ("GET", "/api/reports/audit-logs"): ADMIN,
     ("POST", "/api/admin/customer-verifications/invalidate-outdated"): ADMIN,
+    ("POST", "/api/admin/staff"): ADMIN,
+    ("POST", "/api/admin/staff/<int:user_id>/reset-password"): ADMIN,
     # --- shared -----------------------------------------------------------
     ("POST", "/api/payments/repay"): EVERYONE,  # customer: own loan; staff: counter entry
     ("GET", "/api/payments/loan/<int:loan_id>"): EVERYONE,  # customer: own loan only
