@@ -564,7 +564,7 @@ def test_customer_history_summarises_this_customer(client, staff, new_applicatio
     rec = body["repayment_record"]
     assert (rec["installments_paid_on_time"], rec["installments_paid_late"]) == (0, 1)
     assert rec["installments_ever_overdue"] == 1 and rec["payments_verified"] == 1
-    assert body["penalties"]["applicable"] is False
+    assert body["penalties"]["applicable"] is True and body["penalties"]["count"] == 0
     assert body["previous_applications"][0]["id"] != app_id, "the current application isn't 'previous'"
     assert body["loans"][0]["installments"]["paid_late"] == 1
 

@@ -187,3 +187,33 @@ def test_customer_summary_shows_the_penalty_owed(client, people, late_loan):
     (summary,) = client.get("/api/accounts/summary", headers=people["ch"]).get_json()["active_loans"]
     assert (summary["penalties"], summary["amount_remaining"], summary["amount_paid"]) == (50.0, 750.0, 0.0)
     assert summary["status"] == "overdue"
+
+
+def test_every_customer_and_staff_view_includes_the_penalty(client, people, late_loan):
+    loan_id, due = late_loan
+    penalties.run(as_of=due + timedelta(days=7))
+
+    kpis = client.get("/api/reports/dashboard", headers=people["ch"]).get_json()["kpis"]
+    assert (kpis["outstanding_balance"], kpis["amount_repaid"], kpis["overdue_amount"]) == (750.0, 0.0, 750.0)
+    assert kpis["next_payment"]["amount_due"] == 750.0
+
+    (loan,) = client.get("/api/loans/mine", headers=people["ch"]).get_json()["loans"]
+    balance = loan["balance"]
+    assert (balance["original_obligation"], balance["penalties"], balance["outstanding"]) == (700.0, 50.0, 750.0)
+    assert balance["due_date"] == due.isoformat() and balance["days_overdue"] > 7
+    (item,) = balance["penalty_items"]
+    assert (item["tier"], item["amount"], item["days_late"], item["applied_on"]) == (
+        1, 50.0, 7, (due + timedelta(days=7)).isoformat())
+    assert "7 days late" in item["reason"] and "K200.00" in item["reason"]
+
+    staff = client.get("/api/reports/dashboard", headers=people["ah"]).get_json()["kpis"]
+    assert staff["total_outstanding"] == 750.0 and staff["loans_in_arrears"] == 1
+
+    # Customer history, for any of the customer's applications (admins aren't
+    # limited to open ones).
+    app_id = db.session.get(Loan, loan_id).application_id
+    history = client.get(f"/api/admin/applications/{app_id}/customer-history", headers=people["ah"]).get_json()
+    pen = history["penalties"]
+    assert (pen["applicable"], pen["count"], pen["total_charged"]) == (True, 1, 50.0)
+    assert pen["items"][0]["loan_id"] == loan_id
+    assert "25% of the loan's original interest at 7 days late" in pen["policy"]

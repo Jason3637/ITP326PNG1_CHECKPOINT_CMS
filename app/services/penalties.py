@@ -251,3 +251,44 @@ def assess_before_verification(loan: Loan) -> list[dict]:
     job_run.finished_at = datetime.now(timezone.utc)
     job_run.summary = {"loan_id": loan.id, "outcomes": outcomes}
     return outcomes
+
+
+# ---------------------------------------------------------- read side (customer-safe)
+def policy_text(version=None) -> str:
+    """Plain-language statement of a penalty policy version (default: the
+    current one), e.g. "25% of the loan's original interest at 7 days late,
+    then a further 100% at 14 days late." """
+    from . import pricing_policy
+
+    version = version or pricing_policy.current_penalty_policy()
+    parts = []
+    for i, t in enumerate(sorted(version.tiers, key=lambda t: t.tier)):
+        pct = f"{Decimal(t.pct_of_original_interest) * 100:.0f}%"
+        prefix = "" if i == 0 else "then a further "
+        parts.append(f"{prefix}{pct} of the loan's original interest at {t.days_late} days late")
+    return ("Late payments add a penalty: " + ", ".join(parts) + ". Nothing is added after that.") if parts else ""
+
+
+def describe(loan_id: int) -> list[dict]:
+    """The penalties charged on one loan, oldest first, each with the date it
+    applied and a reason a customer can read."""
+    from app.models import PenaltyPolicyTier
+
+    rows = (
+        db.session.query(LoanLedgerEntry, PenaltyPolicyTier.days_late)
+        .outerjoin(PenaltyPolicyTier, (PenaltyPolicyTier.version_id == LoanLedgerEntry.penalty_policy_version_id)
+                   & (PenaltyPolicyTier.tier == LoanLedgerEntry.penalty_tier))
+        .filter(LoanLedgerEntry.loan_id == loan_id, LoanLedgerEntry.entry_type == LedgerEntryType.PENALTY)
+        .order_by(LoanLedgerEntry.penalty_tier)
+        .all()
+    )
+    return [
+        {
+            "tier": e.penalty_tier,
+            "amount": float(Decimal(e.amount)),
+            "applied_on": e.effective_date.isoformat(),
+            "days_late": days_late,
+            "reason": e.note or f"Late payment ({days_late} days late)",
+        }
+        for e, days_late in rows
+    ]

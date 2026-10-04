@@ -22,6 +22,8 @@ from app.models.enums import (
     UserRole,
 )
 
+from . import ledger, penalties
+
 _ZERO = Decimal("0")
 _STAFF = (UserRole.LOAN_OFFICER, UserRole.ADMIN)
 # "In progress" loans still owed on - see accounts.py's identical constant.
@@ -93,36 +95,59 @@ def build_dashboard(user: User) -> dict:
 
 
 # ============================================================ customer view
+def _owed(loan) -> tuple[Decimal, Decimal]:
+    """(still owed, verified repaid) for a loan - from the ledger, so late-
+    payment penalties count; the old amortized loans with no ledger fall
+    back to their installments."""
+    if loan.ledger_entries:
+        t = ledger.totals(loan.id)
+        return max(_ZERO, t["outstanding"]), t["verified_repayments"]
+    rows = loan.repayment_schedule
+    due = sum((Decimal(r.amount_due) for r in rows), _ZERO)
+    paid = sum((Decimal(r.amount_paid) for r in rows), _ZERO)
+    return max(_ZERO, due - paid), paid
+
+
 def _customer_dashboard(user: User) -> dict:
     loans = Loan.query.filter_by(user_id=user.id).order_by(Loan.id.desc()).all()
     active = [l for l in loans if l.status in _IN_PROGRESS_STATUSES]
+    today = ledger.today_local()
 
     active_rows = [r for l in active for r in l.repayment_schedule]
+    owed = {l.id: _owed(l) for l in active}
 
     total_borrowed = sum((Decimal(l.principal_amount) for l in loans), _ZERO)
-    repayable_active = sum((Decimal(l.total_repayable) for l in active), _ZERO)
-    repaid_active = sum((Decimal(r.amount_paid) for r in active_rows), _ZERO)
-    outstanding = max(_ZERO, repayable_active - repaid_active)
+    repaid_active = sum((p for _, p in owed.values()), _ZERO)
+    outstanding = sum((o for o, _ in owed.values()), _ZERO)
 
     overdue_rows = [r for r in active_rows if _is_overdue(r)]
-    overdue_amount = sum(
-        (Decimal(r.amount_due) - Decimal(r.amount_paid) for r in overdue_rows), _ZERO
-    )
+    overdue_amount = sum((owed[l.id][0] for l in active if penalties.is_overdue(l, today)), _ZERO)
 
-    unpaid = sorted(
-        (r for r in active_rows if r.status != RepaymentStatus.PAID),
-        key=lambda r: (r.due_date, r.installment_number),
-    )
+    # What to pay next: per loan, its due date and what it still owes
+    # (penalties included); the earliest first.
+    candidates = []
+    for l in active:
+        if owed[l.id][0] <= 0:
+            continue
+        if l.terms_snapshot is not None:
+            candidates.append((l.terms_snapshot.due_date, 1, l.id, owed[l.id][0]))
+        else:
+            for r in l.repayment_schedule:
+                if r.status != RepaymentStatus.PAID:
+                    candidates.append((r.due_date, r.installment_number, l.id,
+                                       Decimal(r.amount_due) - Decimal(r.amount_paid)))
+    candidates.sort()
     next_payment = None
-    if unpaid:
-        nr = unpaid[0]
+    if candidates:
+        due, number, loan_id, amount = candidates[0]
         next_payment = {
-            "loan_id": nr.loan_id,
-            "installment_number": nr.installment_number,
-            "due_date": nr.due_date.isoformat(),
-            "amount_due": _f(Decimal(nr.amount_due) - Decimal(nr.amount_paid)),
-            "days_until_due": (nr.due_date - date.today()).days,
+            "loan_id": loan_id,
+            "installment_number": number,
+            "due_date": due.isoformat(),
+            "amount_due": _f(amount),
+            "days_until_due": (due - today).days,
         }
+    unpaid = candidates
 
     # installments by (effective) status - bar chart
     paid_n = sum(1 for r in active_rows if r.status == RepaymentStatus.PAID)
@@ -132,9 +157,9 @@ def _customer_dashboard(user: User) -> dict:
     # projected paydown - line chart over the remaining installments
     running = outstanding
     forecast_labels, forecast_values = [], []
-    for r in unpaid:
-        running = max(_ZERO, running - (Decimal(r.amount_due) - Decimal(r.amount_paid)))
-        forecast_labels.append(r.due_date.isoformat())
+    for due, _number, _loan_id, amount in unpaid:
+        running = max(_ZERO, running - amount)
+        forecast_labels.append(due.isoformat())
         forecast_values.append(_f(running))
 
     return {
@@ -186,15 +211,17 @@ def _portfolio_dashboard() -> dict:
     active = [l for l in loans if l.status in _IN_PROGRESS_STATUSES]
 
     all_active_rows = [r for l in active for r in l.repayment_schedule]
+    # Owed per loan from the ledger (penalties included).
     outstanding_by_loan: dict[int, Decimal] = {}
-    for r in all_active_rows:
-        bal = Decimal(r.amount_due) - Decimal(r.amount_paid)
-        if bal > 0:
-            outstanding_by_loan[r.loan_id] = outstanding_by_loan.get(r.loan_id, _ZERO) + bal
+    for l in active:
+        owing = _owed(l)[0]
+        if owing > 0:
+            outstanding_by_loan[l.id] = owing
     total_outstanding = sum(outstanding_by_loan.values(), _ZERO)
 
     overdue_rows = [r for r in all_active_rows if _is_overdue(r)]
-    arrears_loan_ids = {r.loan_id for r in overdue_rows}
+    today = ledger.today_local()
+    arrears_loan_ids = {l.id for l in active if penalties.is_overdue(l, today)}
     at_risk = sum((outstanding_by_loan.get(lid, _ZERO) for lid in arrears_loan_ids), _ZERO)
 
     total_disbursed = sum((Decimal(l.principal_amount) for l in loans), _ZERO)
@@ -230,20 +257,21 @@ def _portfolio_dashboard() -> dict:
     for lid in sorted(
         arrears_loan_ids, key=lambda i: outstanding_by_loan.get(i, _ZERO), reverse=True
     )[:5]:
-        rows = [r for r in overdue_rows if r.loan_id == lid]
-        oldest = min(r.due_date for r in rows)
         loan = next(l for l in active if l.id == lid)
+        rows = [r for r in overdue_rows if r.loan_id == lid]
+        oldest = (
+            loan.terms_snapshot.due_date if loan.terms_snapshot is not None
+            else min(r.due_date for r in rows)
+        )
         top_overdue.append(
             {
                 "loan_id": lid,
                 "user_id": loan.user_id,
                 "overdue_installments": len(rows),
-                "overdue_amount": _f(
-                    sum((Decimal(r.amount_due) - Decimal(r.amount_paid) for r in rows), _ZERO)
-                ),
+                "overdue_amount": _f(outstanding_by_loan.get(lid, _ZERO)),
                 "outstanding": _f(outstanding_by_loan.get(lid, _ZERO)),
                 "oldest_due_date": oldest.isoformat(),
-                "days_overdue": (date.today() - oldest).days,
+                "days_overdue": (today - oldest).days,
             }
         )
 

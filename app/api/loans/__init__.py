@@ -404,6 +404,11 @@ loan_out = ns.model(
         "total_repayable": fields.Float,
         "status": fields.String(example="active"),
         "closure_reason": fields.String,
+        "balance": fields.Raw(
+            description="From the ledger (null for a loan with no ledger): original_obligation, "
+            "penalties, verified_repayments, outstanding, due_date, days_overdue, and "
+            "penalty_items [{tier, amount, applied_on, days_late, reason}]."
+        ),
         "disbursed_at": fields.String,
         "disbursement": fields.Nested(disbursement_out, allow_null=True, skip_none=True),
         "repayment_schedule": fields.List(fields.Nested(schedule_item_out)),
@@ -571,6 +576,25 @@ def serialize_application_staff(a: LoanApplication) -> dict:
     return data
 
 
+def _loan_balance(loan: Loan) -> dict | None:
+    """What is owed, from the ledger (None for a loan with no ledger)."""
+    from app.services import ledger, penalties
+
+    if not loan.ledger_entries:
+        return None
+    t = ledger.totals(loan.id)
+    snap = loan.terms_snapshot
+    return {
+        "original_obligation": _num(t["original_obligation"]),
+        "penalties": _num(t["penalties"]),
+        "verified_repayments": _num(t["verified_repayments"]),
+        "outstanding": _num(t["outstanding"]),
+        "due_date": snap.due_date.isoformat() if snap else None,
+        "days_overdue": ledger.days_overdue(snap.due_date, t["outstanding"]) if snap else 0,
+        "penalty_items": penalties.describe(loan.id),
+    }
+
+
 def serialize_loan(loan: Loan) -> dict:
     return {
         "id": loan.id,
@@ -595,6 +619,10 @@ def serialize_loan(loan: Loan) -> dict:
                 "recorded_by": loan.disbursement.recorded_by,
             }
         ),
+        # From the ledger: what is owed now, including any late-payment
+        # penalties (each with when it applied and why). The schedule below
+        # only ever holds the original amount.
+        "balance": _loan_balance(loan),
         "repayment_schedule": [
             {
                 "id": r.id,
