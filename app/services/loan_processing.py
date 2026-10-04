@@ -35,6 +35,7 @@ from app.models import (
     AdminReturn,
     CustomerVerification,
     Disbursement,
+    Document,
     InformationRequest,
     InformationResponse,
     Loan,
@@ -761,6 +762,53 @@ def _parse_responses(responses, open_ids: set[int]) -> dict[int, str]:
     return notes
 
 
+def _parse_document_ids(document_ids) -> list[int]:
+    if document_ids is None:
+        return []
+    if not isinstance(document_ids, list):
+        raise LoanProcessingError("document_ids must be a list of document ids.")
+    try:
+        return sorted({int(d) for d in document_ids})
+    except (TypeError, ValueError):
+        raise LoanProcessingError("document_ids must be a list of document ids.")
+
+
+def _check_required_documents(open_requests, document_ids: list[int], customer) -> None:
+    """Every open request that names a required_document_type must be
+    answered with a NEW document of that type: one of the customer's own,
+    not yet attached to any application or payment (i.e. uploaded for this
+    response). Re-sending the unclear/expired file already on record, or a
+    file of another type, doesn't count. One document may satisfy several
+    requests for the same type.
+
+    Requests without a required_document_type (information only - the
+    `required_information` is free text, e.g. "Gross monthly income") need
+    no file: their answer is the response note, which _parse_responses()
+    already requires, plus any field updates sent with it.
+    """
+    needs = [r for r in open_requests if r.required_document_type is not None]
+    if not needs:
+        return
+    fresh_types = {
+        d.document_type
+        for d in Document.query.filter(
+            Document.id.in_(document_ids or [-1]),
+            Document.user_id == customer.id,
+            Document.loan_application_id.is_(None),
+            Document.payment_transaction_id.is_(None),
+        )
+    }
+    missing = [r for r in needs if r.required_document_type not in fresh_types]
+    if missing:
+        listed = ", ".join(
+            f"#{r.id}: {r.required_document_type.value.replace('_', ' ')}"
+            for r in sorted(missing, key=lambda r: r.id)
+        )
+        raise LoanProcessingError(
+            f"Upload the requested document with your response (request {listed})."
+        )
+
+
 def respond_to_customer_action(
     application: LoanApplication,
     customer,
@@ -792,6 +840,8 @@ def respond_to_customer_action(
     _require_status(application, LoanApplicationStatus.CUSTOMER_ACTION_REQUIRED)
     open_requests = {r.id: r for r in open_information_requests(application)}
     notes = _parse_responses(responses, set(open_requests))
+    document_ids = _parse_document_ids(document_ids)
+    _check_required_documents(open_requests.values(), document_ids, customer)
 
     changed: list[str] = []
     field_changes: dict[str, dict] = {}
@@ -903,7 +953,7 @@ def respond_to_customer_action(
     provided_document_ids = None
     if document_ids:
         documents.link_documents_to_application(document_ids, customer, application.id)
-        provided_document_ids = sorted({int(d) for d in document_ids})
+        provided_document_ids = document_ids
         changed.append("documents")
 
     response_rows = []

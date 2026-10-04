@@ -31,6 +31,21 @@ def id_document_for(app_id) -> int:
     return doc.id
 
 
+def uploaded_document(app_id, document_type="proof_of_income") -> int:
+    """A document the application's customer has just uploaded and not yet
+    attached to anything - what POST /users/documents leaves behind before
+    the respond call links it."""
+    application = db.session.get(LoanApplication, app_id)
+    doc = Document(
+        user_id=application.user_id,
+        document_type=DocumentType(document_type),
+        storage_path=f"users/{application.user_id}/{document_type}/upload-{id(object())}.pdf",
+    )
+    db.session.add(doc)
+    db.session.commit()
+    return doc.id
+
+
 def evidence_for(app_id, item_key) -> dict:
     """What verifying each identity check needs (see verification._parse_evidence)."""
     if item_key == "age_18_plus":

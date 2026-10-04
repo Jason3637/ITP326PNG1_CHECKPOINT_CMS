@@ -57,7 +57,10 @@ def flow(client, make_user, auth_header, apply_payload, workflow):
             },
         )
         assert r.status_code == 200, r.get_json()
-        r = workflow.respond(app_id, ch, note="Uploaded.", monthly_income=654321)
+        r = workflow.respond(
+            app_id, ch, note="Uploaded.", monthly_income=654321,
+            document_ids=[_workflow.uploaded_document(app_id, "proof_of_income")],
+        )
         assert r.status_code == 200, r.get_json()
         assert workflow.recommend(app_id, oh).status_code == 200
         r = client.get(f"/api/officer/applications/{app_id}/customer-history", headers=oh)
