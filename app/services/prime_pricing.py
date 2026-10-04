@@ -10,6 +10,7 @@ both the application-submit flow and any future pricing-preview endpoint
 call the same function and can never drift apart.
 """
 
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from .errors import ServiceError
@@ -17,6 +18,15 @@ from .errors import ServiceError
 PRIME_MIN_AMOUNT = Decimal("100")
 PRIME_MAX_AMOUNT = Decimal("1000")
 PRIME_TERM_DAYS = 14
+
+# Due dates are Port Moresby calendar dates. PNG is UTC+10 with no daylight
+# saving, so a fixed offset is exact (and needs no tz database on Windows).
+LOCAL_TZ = timezone(timedelta(hours=10), "Pacific/Port_Moresby")
+
+
+def local_date(moment: datetime) -> date:
+    """The Port Moresby calendar date of an aware datetime."""
+    return moment.astimezone(LOCAL_TZ).date()
 
 _KINA = Decimal("1")
 

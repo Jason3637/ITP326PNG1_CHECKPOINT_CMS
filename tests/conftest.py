@@ -32,6 +32,11 @@ def app():
     application = create_app("testing")
     with application.app_context():
         _db.create_all()
+        # Version 1 of the PRIME pricing and penalty policies - what
+        # migration e4a9b7c2d158 seeds on real databases.
+        from app.services import pricing_policy
+
+        pricing_policy.seed_reference_data()
         # The rate limiter's storage is a module-level singleton (see
         # app/extensions.py) shared across every create_app() call in this
         # process, unlike `_db` which gets a fresh schema per test - without

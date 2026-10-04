@@ -207,3 +207,29 @@ class CustomerVerificationInvalidationReason(enum.StrEnum):
     POLICY_UPDATED = "policy_updated"
     # Replaced by a newer verification of the same customer (re-verified).
     SUPERSEDED = "superseded"
+
+
+class LedgerEntryType(enum.StrEnum):
+    """What a LoanLedgerEntry records. Amounts are signed: what the customer
+    owes is positive, what they have paid is negative, so a loan's
+    outstanding balance is the plain SUM of its entries.
+    """
+
+    ORIGINAL_OBLIGATION = "original_obligation"  # principal + interest, at disbursement
+    PENALTY = "penalty"  # a late-payment tier, added by the penalty job
+    VERIFIED_REPAYMENT = "verified_repayment"  # posted only when an admin verifies
+
+
+class LedgerActorKind(enum.StrEnum):
+    SYSTEM = "system"  # a scheduled job (created_by is NULL)
+    ADMIN = "admin"  # an administrator's action (created_by is set)
+
+
+class LoanTimeliness(enum.StrEnum):
+    """How a closed loan was repaid, judged by the final payment's date
+    against the due date and the penalty tiers (7 and 14 days late)."""
+
+    ON_TIME = "on_time"
+    LATE_NO_PENALTY = "late_no_penalty"  # 1-6 days late
+    LATE_TIER_1 = "late_tier_1"  # 7-13 days late
+    LATE_TIER_2 = "late_tier_2"  # 14+ days late
