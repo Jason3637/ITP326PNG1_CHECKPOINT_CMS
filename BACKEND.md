@@ -314,7 +314,8 @@ any open status --admin early exit--> REJECTED
 | Report a repayment | ✅ own | ✅ counter entry | ✅ |
 | Claim a repayment for verification | — | ✅ | ✅ |
 | **Verify / reject a repayment** | — | ❌ | ✅ |
-| Close a paid loan; write off a loan | — | ❌ | ✅ |
+| Write off a loan (paid loans close automatically) | — | ❌ | ✅ |
+| Administrator API (`/api/admin/...`: queues, decisions, disbursement, loans, repayments, pricing, analytics) | — | ❌ | ✅ |
 | System parameters; audit logs | — | ❌ | ✅ |
 | Create staff accounts; reset a staff password | — | ❌ | ✅ |
 
@@ -350,7 +351,7 @@ Full request/response models are in Swagger (`/api/docs`).
 | PATCH | `/api/officer/applications/<id>/checklist/<item_type>` | assigned officer, `admin` | `{"status", "note"}` — one item, records who/when |
 | GET | `/api/officer/applications/<id>/customer-history` | `loan_officer`\*, `admin` | this application's customer's history |
 | GET | `/api/loans/mine` | `customer` | the customer's own loans + schedules |
-| POST | `/api/loans/<id>/close`, `/api/loans/<id>/write-off` | `admin` | PAID → CLOSED; ACTIVE/OVERDUE → CLOSED (defaulted) |
+| POST | `/api/loans/<id>/write-off` | `admin` | ACTIVE/OVERDUE → CLOSED (defaulted), reason required — also at `/api/admin/loans/<id>/write-off` |
 | GET | `/api/accounts/summary` | `customer` | dashboard: active loans, next repayment due, progress % |
 
 ### Interest rate configuration — where it lives
@@ -618,23 +619,60 @@ Loan Officer workflow actions (all `entity_type=LoanApplication`):
 
 ### Admin: system parameters
 
-`GET` / `PUT /api/admin/parameters` (**admin only**) — the runtime tunables from
-Phase B3:
+`GET` / `PUT /api/admin/parameters` (**admin only**) — the short, deliberate
+list of runtime tunables:
 
 | key | type | seed default |
 |---|---|---|
-| `default_annual_interest_rate` | rate (0–1) | 0.18 |
-| `min_loan_amount` / `max_loan_amount` | money | 100 / 50000 |
-| `min_loan_term_months` / `max_loan_term_months` | int | 1 / 60 |
 | `min_monthly_income` | money | 200 (credit evaluation, interim model — see below) |
 | `max_debt_to_income_ratio` | rate (0–1) | 0.40 (credit evaluation, interim model — see below) |
+| `customer_verification_validity_months` | int | 12 (awaiting client confirmation) |
 
-Stored in the `system_parameters` table (one row per override). Config values are
-the **seed defaults**; a stored row overrides at runtime with no redeploy.
-`loan_processing` and `credit_evaluation` read every one of these through
-`app/services/parameters.py`, so a `PUT` takes effect on the next application.
-`PUT` body is a partial object (`{"default_annual_interest_rate": 0.24}`); each
-change is validated and audited (`system_parameters_updated`).
+Stored in `system_parameters` (one row per override); config values are the
+seed defaults. Each `PUT` is validated and audited (`system_parameters_updated`,
+`details.changes = {key: {before, after}}`). The old interest-rate,
+loan-amount and loan-term settings were removed (migration f3a7c9e1b5d2):
+nothing read them once PRIME's tiers and fixed 14-day term replaced them.
+
+PRIME pricing and the late-penalty tiers are configured as **versions**, not
+parameters — see *Administrator API* below. A change applies to applications
+submitted afterwards; existing quotes and every loan's terms snapshot never
+change.
+
+### Administrator API
+
+All under `/api/admin`, **admin only at the route level** (a loan_officer or
+customer token gets 403 on every one — `tests/test_admin_api.py`). Swagger
+(`/api/docs`, namespace *admin*) has every request/response model.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/admin/queues` | counts: `awaiting_decision`, `awaiting_disbursement`, `active_loans`, `due_today`, `due_this_week`, `overdue`, `repayments_awaiting_verification` |
+| GET | `/admin/queues/<queue>?page&per_page` | one queue, filtered and paged in SQL; `kind` = application / loan / repayment |
+| GET | `/admin/applications/<id>` | final review: customer + verification, application, officer recommendation records, checklist, credit notes, locked quote |
+| GET | `/admin/applications/<id>/customer-history` | the officer's customer-history logic; admins aren't limited to open applications |
+| POST | `/admin/applications/<id>/approve` | `{note?}` → AWAITING_DISBURSEMENT (from RECOMMENDED_* or ADMIN_REVIEW); creates nothing |
+| POST | `/admin/applications/<id>/reject` | `{reason}` required |
+| POST | `/admin/applications/<id>/return-to-officer` | `{reason}` required → RETURNED_TO_OFFICER |
+| POST | `/admin/applications/<id>/disbursement-evidence` | multipart `file` → a `disbursement_evidence` document under the customer |
+| POST | `/admin/applications/<id>/disbursement` | `{method, reference, disbursed_at?, evidence_document_id?, note?}` → one transaction: Disbursement, terms snapshot, ORIGINAL_OBLIGATION, loan ACTIVE, application DISBURSED |
+| GET | `/admin/loans?status=open\|closed\|all` | loans with ledger-derived balances |
+| GET | `/admin/loans/<id>` | terms, ledger balance, disbursement, closure, full ledger, payments, audit history |
+| POST | `/admin/loans/<id>/write-off` | `{reason}` required → CLOSED / defaulted + closure record |
+| GET | `/admin/repayments?status=awaiting\|verified\|rejected\|all` | reported payments with the loan's outstanding balance |
+| POST | `/admin/repayments/<id>/verify` | one transaction: VERIFIED + ledger entry (+ automatic closure at zero); twice → 409; above the balance → 409 |
+| POST | `/admin/repayments/<id>/reject` | `{reason}` required; no ledger entry |
+| GET/POST | `/admin/pricing` | PRIME tier versions (POST `{tiers:[{category,min_amount,max_amount,interest_rate}], note?}`) |
+| GET/POST | `/admin/penalty-policy` | late-penalty versions (POST `{tiers:[{days_late,pct_of_original_interest}], note?}`) |
+| GET | `/admin/analytics?from&to` | every metric `{value, definition}`; principal, interest, expected repayment, verified cash and outstanding are separate |
+
+The audit-log query stays at `GET /api/reports/audit-logs` (admin; filters
+`actor_id`, `actor_role`, `action`, `entity_type`, `entity_id`, `date_from`,
+`date_to`).
+
+**Loan closure is automatic**: verifying the payment that brings the ledger
+balance to zero closes the loan (CLOSED / `paid_in_full`) and writes its
+`loan_closures` record in the same transaction. There is no close endpoint.
 
 ### CORS
 

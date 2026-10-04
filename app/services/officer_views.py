@@ -128,9 +128,20 @@ def list_queue(
     }
 
 
+def quoted_total(a: LoanApplication) -> float | None:
+    """The total repayable the customer was quoted (locked at submission);
+    live pricing only for an older row with no quote, and None for a
+    pre-PRIME application PRIME can't price."""
+    if a.quoted_total_repayable is not None:
+        return _money(a.quoted_total_repayable)
+    try:
+        return _money(prime_pricing.calculate_prime(a.amount_requested)["total_repayable"])
+    except ServiceError:
+        return None
+
+
 def queue_item(a: LoanApplication, viewer: User) -> dict:
     """Compact row for a queue list - enough to triage without opening it."""
-    pricing = prime_pricing.calculate_prime(a.amount_requested)
     returned = a.admin_returns[-1] if a.admin_returns else None
     rec = loan_processing.latest_recommendation(a)
     return {
@@ -140,7 +151,7 @@ def queue_item(a: LoanApplication, viewer: User) -> dict:
         "customer_name": a.applicant.full_name if a.applicant else None,
         "amount_requested": _money(a.amount_requested),
         "prime_category": a.prime_category,
-        "total_repayable": _money(pricing["total_repayable"]),
+        "total_repayable": quoted_total(a),
         "purpose_category": str(a.purpose_category) if a.purpose_category else None,
         "submitted_at": _iso(a.submitted_at),
         "assigned_officer_id": a.assigned_officer_id,

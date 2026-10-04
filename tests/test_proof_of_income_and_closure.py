@@ -63,44 +63,6 @@ def test_named_rule_threshold_is_exactly_k1000(app):
     assert documents.proof_of_income_required(1000) is True
 
 
-def test_close_loan_requires_paid_status(app, make_user):
-    from app.extensions import db
-    from app.models import Loan, LoanApplication
-    from app.models.enums import LoanApplicationStatus, LoanStatus
-
-    user = make_user("customer")
-    admin = make_user("admin")
-    application = LoanApplication(
-        user_id=user.id, amount_requested=500, status=LoanApplicationStatus.AWAITING_DISBURSEMENT
-    )
-    db.session.add(application)
-    db.session.flush()
-    loan = Loan(
-        application_id=application.id,
-        user_id=user.id,
-        principal_amount=500,
-        interest_rate="0.40",
-        term_days=14,
-        monthly_payment=700,
-        total_repayable=700,
-        status=LoanStatus.ACTIVE,
-    )
-    db.session.add(loan)
-    db.session.commit()
-
-    try:
-        loan_processing.close_loan(loan, admin)
-        assert False, "expected a ServiceError - loan is not PAID yet"
-    except ServiceError:
-        pass
-
-    loan.status = LoanStatus.PAID
-    db.session.commit()
-    closed = loan_processing.close_loan(loan, admin)
-    assert str(closed.status) == "closed"
-    assert str(closed.closure_reason) == "paid_in_full"
-
-
 def test_write_off_loan_marks_closed_defaulted(app, make_user):
     from app.extensions import db
     from app.models import Loan, LoanApplication
@@ -124,6 +86,14 @@ def test_write_off_loan_marks_closed_defaulted(app, make_user):
         status=LoanStatus.OVERDUE,
     )
     db.session.add(loan)
+    db.session.flush()
+    from datetime import date
+    from app.models import LoanLedgerEntry
+    from app.models.enums import LedgerActorKind, LedgerEntryType
+
+    db.session.add(LoanLedgerEntry(loan_id=loan.id, entry_type=LedgerEntryType.ORIGINAL_OBLIGATION,
+                                   amount=700, effective_date=date.today(),
+                                   created_by_kind=LedgerActorKind.SYSTEM))
     db.session.commit()
 
     written_off = loan_processing.write_off_loan(loan, admin, note="Uncollectable.")

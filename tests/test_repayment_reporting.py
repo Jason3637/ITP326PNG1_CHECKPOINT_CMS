@@ -46,7 +46,7 @@ def _disbursed_loan(client, make_user, auth_header, apply_payload):
         f"/api/loans/applications/{app_id}/decision", headers=ah, json={"decision": "approve"}
     )
     r = client.post(
-        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand"}
+        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand", "method_reference": "CASH-ACK-0001"}
     )
     return r.get_json()["loan"], customer, officer, admin, ch, oh, ah
 
@@ -148,7 +148,7 @@ def test_verify_chain_only_updates_ledger_on_verified(
     assert r.status_code == 200, r.get_json()
     assert r.get_json()["transaction"]["status"] == "verified"
     assert r.get_json()["loan_completed"] is True
-    assert r.get_json()["loan_status"] == "paid"
+    assert r.get_json()["loan_status"] == "closed"
 
 
 def test_reject_requires_a_reason_and_never_touches_the_ledger(
@@ -248,10 +248,10 @@ def test_loan_reaches_paid_only_once_the_full_verified_amount_covers_it(
     r = client.post(f"/api/payments/{txn3_id}/verify", headers=ah, json={"decision": "verified"})
     assert r.status_code == 200, r.get_json()
     assert r.get_json()["loan_completed"] is True
-    assert r.get_json()["loan_status"] == "paid"
+    assert r.get_json()["loan_status"] == "closed"
 
 
-def test_close_loan_is_a_distinct_step_from_paid(client, make_user, auth_header, apply_payload):
+def test_paid_in_full_closes_automatically(client, make_user, auth_header, apply_payload):
     loan, customer, officer, admin, ch, oh, ah = _disbursed_loan(
         client, make_user, auth_header, apply_payload
     )
@@ -263,18 +263,14 @@ def test_close_loan_is_a_distinct_step_from_paid(client, make_user, auth_header,
         json={"repayment_schedule_id": row.id, "amount": loan["total_repayable"], "payment_method": "cash"},
     )
     txn_id = r.get_json()["transaction"]["id"]
-    client.post(f"/api/payments/{txn_id}/verify", headers=ah, json={"decision": "verified"})
+    r = client.post(f"/api/payments/{txn_id}/verify", headers=ah, json={"decision": "verified"})
+    assert r.get_json()["loan_status"] == "closed"
 
-    # Closing a PAID loan is admin-only (a loan_officer gets 403); write-off
-    # is admin-only too and requires active/overdue.
+    # Closed means closed: there is no separate close step, and a write-off
+    # needs an active/overdue loan.
     r = client.post(f"/api/loans/{loan['id']}/write-off", headers=ah, json={"note": "n/a"})
-    assert r.status_code == 409, "cannot write off an already-PAID loan"
-
-    assert client.post(f"/api/loans/{loan['id']}/close", headers=oh).status_code == 403
-    r = client.post(f"/api/loans/{loan['id']}/close", headers=ah)
-    assert r.status_code == 200, r.get_json()
-    assert r.get_json()["status"] == "closed"
-    assert r.get_json()["closure_reason"] == "paid_in_full"
+    assert r.status_code == 409, "cannot write off a closed loan"
+    assert client.post(f"/api/loans/{loan['id']}/close", headers=ah).status_code == 404
 
 
 # ============================================================== point 4
@@ -322,7 +318,7 @@ def test_the_full_loop_is_captured_in_auditlog(client, make_user, auth_header, a
     assert rejected.actor_id == admin.id
     assert rejected.details["reason"] == "Bad receipt."
 
-    # Now do a full verified + close pass for loan_paid / loan_closed coverage.
+    # Now a full verified pass, which closes the loan on its own.
     r = client.post(
         "/api/payments/repay",
         headers=ch,
@@ -330,17 +326,11 @@ def test_the_full_loop_is_captured_in_auditlog(client, make_user, auth_header, a
     )
     txn2_id = r.get_json()["transaction"]["id"]
     client.post(f"/api/payments/{txn2_id}/verify", headers=ah, json={"decision": "verified"})
-    client.post(f"/api/loans/{loan['id']}/close", headers=ah)
 
     verified = AuditLog.query.filter_by(
         action="payment_verified", entity_type="PaymentTransaction", entity_id=str(txn2_id)
     ).first()
     assert verified is not None and verified.actor_id == admin.id
-
-    loan_paid = AuditLog.query.filter_by(
-        action="loan_paid", entity_type="Loan", entity_id=str(loan["id"])
-    ).first()
-    assert loan_paid is not None
 
     loan_closed = AuditLog.query.filter_by(
         action="loan_closed", entity_type="Loan", entity_id=str(loan["id"])
@@ -348,3 +338,5 @@ def test_the_full_loop_is_captured_in_auditlog(client, make_user, auth_header, a
     assert loan_closed is not None
     assert loan_closed.actor_id == admin.id
     assert loan_closed.details["closure_reason"] == "paid_in_full"
+    assert loan_closed.details["automatic"] is True
+    assert loan_closed.details["closing_payment_transaction_id"] == txn2_id

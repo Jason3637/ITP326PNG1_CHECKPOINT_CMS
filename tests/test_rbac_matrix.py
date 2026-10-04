@@ -70,7 +70,6 @@ MATRIX: dict[tuple[str, str], frozenset] = {
     ("POST", "/api/loans/applications/<int:application_id>/reject"): ADMIN,
     ("POST", "/api/loans/applications/<int:application_id>/disburse"): ADMIN,
     ("POST", "/api/payments/<int:transaction_id>/verify"): ADMIN,
-    ("POST", "/api/loans/<int:loan_id>/close"): ADMIN,
     ("POST", "/api/loans/<int:loan_id>/write-off"): ADMIN,
     ("GET", "/api/admin/parameters"): ADMIN,
     ("PUT", "/api/admin/parameters"): ADMIN,
@@ -78,6 +77,27 @@ MATRIX: dict[tuple[str, str], frozenset] = {
     ("POST", "/api/admin/customer-verifications/invalidate-outdated"): ADMIN,
     ("POST", "/api/admin/staff"): ADMIN,
     ("POST", "/api/admin/staff/<int:user_id>/reset-password"): ADMIN,
+    # --- Administrator operations API (all admin-only) --------------------
+    ("GET", "/api/admin/queues"): ADMIN,
+    ("GET", "/api/admin/queues/<string:queue>"): ADMIN,
+    ("GET", "/api/admin/applications/<int:application_id>"): ADMIN,
+    ("GET", "/api/admin/applications/<int:application_id>/customer-history"): ADMIN,
+    ("POST", "/api/admin/applications/<int:application_id>/approve"): ADMIN,
+    ("POST", "/api/admin/applications/<int:application_id>/reject"): ADMIN,
+    ("POST", "/api/admin/applications/<int:application_id>/return-to-officer"): ADMIN,
+    ("POST", "/api/admin/applications/<int:application_id>/disbursement-evidence"): ADMIN,
+    ("POST", "/api/admin/applications/<int:application_id>/disbursement"): ADMIN,
+    ("GET", "/api/admin/loans"): ADMIN,
+    ("GET", "/api/admin/loans/<int:loan_id>"): ADMIN,
+    ("POST", "/api/admin/loans/<int:loan_id>/write-off"): ADMIN,
+    ("GET", "/api/admin/repayments"): ADMIN,
+    ("POST", "/api/admin/repayments/<int:payment_id>/verify"): ADMIN,
+    ("POST", "/api/admin/repayments/<int:payment_id>/reject"): ADMIN,
+    ("GET", "/api/admin/pricing"): ADMIN,
+    ("POST", "/api/admin/pricing"): ADMIN,
+    ("GET", "/api/admin/penalty-policy"): ADMIN,
+    ("POST", "/api/admin/penalty-policy"): ADMIN,
+    ("GET", "/api/admin/analytics"): ADMIN,
     # --- shared -----------------------------------------------------------
     ("POST", "/api/payments/repay"): EVERYONE,  # customer: own loan; staff: counter entry
     ("GET", "/api/payments/loan/<int:loan_id>"): EVERYONE,  # customer: own loan only
@@ -101,7 +121,6 @@ PHASE1_ADMIN_ONLY = {
     "early-exit reject": ("POST", "/api/loans/applications/<int:application_id>/reject"),
     "record disbursement": ("POST", "/api/loans/applications/<int:application_id>/disburse"),
     "verify / reject repayments": ("POST", "/api/payments/<int:transaction_id>/verify"),
-    "close a loan": ("POST", "/api/loans/<int:loan_id>/close"),
     "write off a loan": ("POST", "/api/loans/<int:loan_id>/write-off"),
 }
 

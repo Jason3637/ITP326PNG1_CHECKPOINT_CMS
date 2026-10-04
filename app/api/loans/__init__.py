@@ -476,11 +476,24 @@ def _num(value):
 
 def serialize_application(a: LoanApplication) -> dict:
     """Customer view. See the module docstring for what it leaves out."""
+    # The quote locked at submission is the price; recomputing from the
+    # current tiers would show a price the customer was never quoted once
+    # an admin changes the rates. Older rows without a quote fall back.
     pricing = None
-    try:
-        pricing = prime_pricing.calculate_prime(a.amount_requested)
-    except ServiceError:
-        pricing = None  # shouldn't happen for a persisted application, but don't 500 on it
+    if a.pricing_version_id is not None:
+        pricing = {
+            "category": a.prime_category,
+            "amount": a.amount_requested,
+            "interest_amount": a.quoted_interest_amount,
+            "rate": a.quoted_interest_rate,
+            "total_repayable": a.quoted_total_repayable,
+            "term_days": prime_pricing.PRIME_TERM_DAYS,
+        }
+    else:
+        try:
+            pricing = prime_pricing.calculate_prime(a.amount_requested)
+        except ServiceError:
+            pricing = None  # e.g. a pre-PRIME application above K1,000
     return {
         "id": a.id,
         "user_id": a.user_id,
@@ -1017,21 +1030,6 @@ def _get_loan(loan_id: int) -> Loan:
     if loan is None:
         abort(404, f"Loan #{loan_id} not found.")
     return loan
-
-
-@ns.route("/<int:loan_id>/close")
-class CloseLoan(Resource):
-    @ns.doc(security="Bearer")
-    @ns.response(200, "PAID -> CLOSED (closure_reason=paid_in_full)", loan_out)
-    @ns.response(409, "Loan is not PAID", error_out)
-    @roles_required("admin")
-    def post(self, loan_id: int):
-        loan = _get_loan(loan_id)
-        try:
-            result = loan_processing.close_loan(loan, _current_user())
-        except ServiceError as exc:
-            abort(exc.status_code, exc.message)
-        return serialize_loan(result)
 
 
 @ns.route("/<int:loan_id>/write-off")

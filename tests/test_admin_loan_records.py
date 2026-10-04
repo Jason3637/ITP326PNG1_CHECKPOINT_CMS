@@ -145,7 +145,7 @@ def test_verifying_a_payment_posts_a_repayment_entry(client, disbursed, people):
 def test_second_disbursement_via_the_api_is_409(client, disbursed, people):
     app_id, _ = disbursed
     r = client.post(f"/api/loans/applications/{app_id}/disburse", headers=people["ah"],
-                    json={"method": "cash_on_hand"})
+                    json={"method": "cash_on_hand", "method_reference": "CASH-ACK-0001"})
     assert r.status_code == 409
 
 
@@ -219,29 +219,36 @@ def test_insert_only_rows_cannot_be_updated_or_deleted(disbursed, model):
 
 
 def test_snapshot_has_no_update_path_in_the_app():
-    """Outside the models, LoanTermsSnapshot is used in exactly one place,
-    loan_processing.py, and only to construct one (an insert at
-    disbursement). Nothing queries it back to change it, and nothing sets
-    attributes on a loan's terms_snapshot."""
-    uses, calls, sets = [], [], []
+    """Outside the models, a LoanTermsSnapshot is only ever constructed in
+    loan_processing.py (the insert at disbursement). Other modules may read
+    it (admin views, the ledger), but nothing assigns to a snapshot's
+    attributes or deletes one."""
+    calls, writes = [], []
     for path in APP_ROOT.rglob("*.py"):
         if path.parts[-2] == "models":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id == "LoanTermsSnapshot":
-                uses.append(path.name)
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                     and node.func.id == "LoanTermsSnapshot"):
                 calls.append(path.name)
-            if isinstance(node, (ast.Assign, ast.AugAssign)):
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                for t in targets:
-                    src = ast.unparse(t)
-                    if "terms_snapshot" in src or "snapshot." in src:
-                        sets.append((path.name, src))
-    assert uses == calls == ["loan_processing.py"]
-    assert sets == []
+            targets = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                targets = [node.target]
+            elif isinstance(node, ast.Delete):
+                targets = node.targets
+            for t in targets:
+                src = ast.unparse(t)
+                if isinstance(t, ast.Attribute) and ("snap" in src or "terms_snapshot" in src):
+                    writes.append((path.name, src))
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("delete", "update")
+                    and "snap" in ast.unparse(node).lower()):
+                writes.append((path.name, ast.unparse(node)))
+    assert calls == ["loan_processing.py"]
+    assert writes == []
 
 
 def test_no_route_writes_to_a_snapshot(app):

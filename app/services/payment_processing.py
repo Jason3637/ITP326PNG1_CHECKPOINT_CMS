@@ -18,10 +18,13 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
+from sqlalchemy.exc import IntegrityError
+
 from app.extensions import db
 from app.models import Loan, LoanLedgerEntry, PaymentTransaction, RepaymentSchedule, User
 from app.models.enums import (
     LedgerActorKind,
+    LoanClosureReason,
     LedgerEntryType,
     LoanStatus,
     PaymentStatus,
@@ -167,13 +170,22 @@ def verify_payment(
     actor: User, transaction_id: int, *, decision: str, note: str | None = None
 ) -> dict:
     """Admin-only - the actual ledger-affecting decision. `decision` is
-    "verified" or "rejected" (a `note` reason is required for "rejected").
-    The ledger (RepaymentSchedule.amount_paid/status, Loan.status) only ever
-    changes here, and only for decision="verified" - never in
-    record_payment(), and never for a loan_officer (they may only claim a
-    transaction via start_payment_verification - the final call is admin's).
+    "verified" or "rejected" (a `note` reason is required for "rejected";
+    a rejection never writes a ledger entry).
+
+    "verified" is ONE database transaction, all or nothing:
+      (a) the PaymentTransaction -> VERIFIED,
+      (b) its VERIFIED_REPAYMENT ledger entry,
+      (c) if that brings the ledger balance to zero, the loan's closure
+          (CLOSED / paid_in_full + its LoanClosure record).
+    The transaction and its loan are row-locked first (Postgres), so two
+    admins can't verify the same payment - or two payments on one loan - at
+    the same moment; the unique index on the ledger's payment_transaction_id
+    backs that up. A payment larger than the outstanding balance is refused.
+    Nothing commits until every step has succeeded; any error rolls back all
+    of it. Emails go out only after the commit.
     """
-    from . import repayments_scheduler  # local import: avoid a circular import
+    from . import closures, ledger, repayments_scheduler  # local: avoid circular imports
 
     if actor.role != UserRole.ADMIN:
         raise ServiceError("Only an admin may verify or reject a payment.", 403)
@@ -182,113 +194,116 @@ def verify_payment(
     if decision == "rejected" and not (note and note.strip()):
         raise ServiceError("note (a reason) is required when rejecting a payment.")
 
-    txn = db.session.get(PaymentTransaction, transaction_id)
-    if txn is None:
-        raise ServiceError("Payment transaction not found.", 404)
-    if txn.status not in _VERIFIABLE_STATUSES:
-        raise ServiceError(
-            f"Transaction #{txn.id} is {txn.status.value}; only reported/"
-            "verification_pending transactions can be verified.",
-            409,
+    try:
+        txn = (
+            PaymentTransaction.query.filter_by(id=transaction_id).with_for_update().one_or_none()
         )
+        if txn is None:
+            raise ServiceError("Payment transaction not found.", 404)
+        if txn.status not in _VERIFIABLE_STATUSES:
+            raise ServiceError(
+                f"Transaction #{txn.id} is already {txn.status.value}; only reported/"
+                "verification_pending transactions can be verified or rejected.",
+                409,
+            )
+        loan = Loan.query.filter_by(id=txn.loan_id).with_for_update().one()
+        schedule: RepaymentSchedule | None = txn.repayment_schedule
 
-    schedule: RepaymentSchedule = txn.repayment_schedule
-    loan: Loan | None = schedule.loan if schedule else txn.loan
+        if decision == "rejected":
+            txn.status = PaymentStatus.REJECTED
+            txn.rejection_reason = note.strip()[:500]
+            audit.record(
+                "payment_rejected",
+                actor_id=actor.id,
+                entity_type="PaymentTransaction",
+                entity_id=txn.id,
+                details={"loan_id": loan.id, "reason": txn.rejection_reason},
+                commit=False,
+            )
+            db.session.commit()
+            return _serialize_transaction(txn)
 
-    if decision == "rejected":
-        txn.status = PaymentStatus.REJECTED
-        txn.rejection_reason = note.strip()
-        audit.record(
-            "payment_rejected",
-            actor_id=actor.id,
-            entity_type="PaymentTransaction",
-            entity_id=txn.id,
-            details={"reason": txn.rejection_reason},
-            commit=False,
-        )
-        db.session.commit()
-        return _serialize_transaction(txn)
+        # ---- verified ----------------------------------------------------
+        if loan.status not in (LoanStatus.ACTIVE, LoanStatus.OVERDUE):
+            raise ServiceError(f"Loan #{loan.id} is {loan.status.value}; nothing is owed on it.", 409)
+        pay_amount = Decimal(txn.amount).quantize(_CENTS)
+        outstanding = ledger.balance(loan.id)
+        if pay_amount > outstanding:
+            raise ServiceError(
+                f"This payment (K{pay_amount:,.2f}) is more than the K{outstanding:,.2f} outstanding "
+                "on the loan. Reject it with a reason so the customer can report the correct amount.",
+                409,
+            )
 
-    # ---- decision == "verified": this is the only place the ledger moves ----
-    now = datetime.now(timezone.utc)
-    txn.status = PaymentStatus.VERIFIED
-    txn.paid_at = now
-    if loan is not None:
-        # Same transaction as the status change; the unique index on
-        # payment_transaction_id makes a double post impossible.
-        db.session.add(LoanLedgerEntry(
+        now = datetime.now(timezone.utc)
+        txn.status = PaymentStatus.VERIFIED  # (a)
+        txn.paid_at = now
+        db.session.add(LoanLedgerEntry(  # (b)
             loan_id=loan.id,
             entry_type=LedgerEntryType.VERIFIED_REPAYMENT,
-            amount=-Decimal(txn.amount),
+            amount=-pay_amount,
             effective_date=txn.payment_date,
             created_by=actor.id,
             created_by_kind=LedgerActorKind.ADMIN,
             payment_transaction_id=txn.id,
+            note=(note or "").strip()[:500] or None,
         ))
+        # Kept in step for the screens that still read the schedule row; the
+        # ledger is the record (amount_paid is retired in a later migration).
+        if schedule is not None:
+            schedule.amount_paid = (Decimal(schedule.amount_paid) + pay_amount).quantize(_CENTS)
+            if schedule.amount_paid >= Decimal(schedule.amount_due):
+                schedule.status = RepaymentStatus.PAID
+        db.session.flush()  # the ledger's unique index fires here on a double post
 
-    pay_amount = Decimal(txn.amount)
-    loan_completed = False
-    if schedule is not None:
-        schedule.amount_paid = (Decimal(schedule.amount_paid) + pay_amount).quantize(_CENTS)
-        fully_covered = schedule.amount_paid >= Decimal(schedule.amount_due)
-        if fully_covered:
-            schedule.status = RepaymentStatus.PAID
-
-        if fully_covered and loan is not None:
-            remaining = [
-                r for r in loan.repayment_schedule if r.status != RepaymentStatus.PAID
-            ]
-            if not remaining:
-                loan.status = LoanStatus.PAID
-                loan_completed = True
-
-    if loan is not None and not loan_completed:
-        repayments_scheduler.sync_loan_overdue_status(loan)
-
-    db.session.flush()
-    audit.record(
-        "payment_verified",
-        actor_id=actor.id,
-        entity_type="PaymentTransaction",
-        entity_id=txn.id,
-        details={
-            "loan_id": loan.id if loan else None,
-            "repayment_schedule_id": schedule.id if schedule else None,
-            "amount": float(pay_amount),
-            "note": note,
-            "installment_status": schedule.status.value if schedule else None,
-            "loan_status": loan.status.value if loan else None,
-        },
-        commit=False,
-    )
-    if loan_completed and loan is not None:
+        remaining = ledger.balance(loan.id)
         audit.record(
-            "loan_paid",
+            "payment_verified",
             actor_id=actor.id,
-            entity_type="Loan",
-            entity_id=loan.id,
-            details={"total_repayable": float(Decimal(loan.total_repayable))},
+            entity_type="PaymentTransaction",
+            entity_id=txn.id,
+            details={
+                "loan_id": loan.id,
+                "repayment_schedule_id": schedule.id if schedule else None,
+                "amount": float(pay_amount),
+                "note": note,
+                "outstanding_before": float(outstanding),
+                "outstanding_after": float(remaining),
+            },
             commit=False,
         )
-    db.session.commit()
+        loan_completed = remaining == 0
+        if loan_completed:  # (c)
+            closures.record_closure(
+                loan, LoanClosureReason.PAID_IN_FULL, actor_id=actor.id, closing_payment=txn
+            )
+        else:
+            repayments_scheduler.sync_loan_overdue_status(loan)
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        raise ServiceError(f"Transaction #{transaction_id} has already been verified.", 409)
+    except Exception:
+        db.session.rollback()
+        raise
 
     if schedule is not None:
         notifications.notify_payment_received(txn, schedule)
 
     result = _serialize_transaction(txn)
+    result["outstanding"] = float(remaining)
+    result["loan_status"] = str(loan.status)
+    result["loan_completed"] = loan_completed
     if schedule is not None:
-        due = Decimal(schedule.amount_due)
-        paid = Decimal(schedule.amount_paid)
+        due, paid = Decimal(schedule.amount_due), Decimal(schedule.amount_paid)
         result["installment"] = {
             "installment_number": schedule.installment_number,
             "amount_due": float(due),
             "amount_paid": float(paid),
             "shortfall": float(max(Decimal("0"), due - paid).quantize(_CENTS)),
-            "overpaid": float(max(Decimal("0"), paid - due).quantize(_CENTS)),
+            "overpaid": 0.0,
             "status": str(schedule.status),
         }
-    result["loan_status"] = str(loan.status) if loan else None
-    result["loan_completed"] = loan_completed
     return result
 
 

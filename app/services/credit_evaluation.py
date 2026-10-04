@@ -247,10 +247,11 @@ def _max_prime_principal_for_budget(budget: Decimal) -> Decimal:
     (the rate itself depends on which tier the answer lands in), so this
     walks candidates per tier - cheap, since the whole range is <=901 values.
     """
-    if budget < prime_pricing.PRIME_MIN_AMOUNT:
+    tiers = prime_pricing.current_tiers()
+    if budget < prime_pricing.bounds(tiers)[0]:
         return Decimal("0")
     best = Decimal("0")
-    for _category, tier_min, tier_max, rate in prime_pricing.TIERS:
+    for _category, tier_min, tier_max, rate in tiers:
         # total_repayable = principal * (1 + rate) within a tier (before
         # whole-Kina rounding of the interest component).
         candidate = (budget / (Decimal("1") + rate)).to_integral_value(rounding=ROUND_FLOOR)
@@ -260,7 +261,7 @@ def _max_prime_principal_for_budget(budget: Decimal) -> Decimal:
         # Rounding of the interest component can occasionally push
         # total_repayable a Kina over budget; step down until it fits.
         while candidate >= tier_min:
-            if prime_pricing.calculate_prime(candidate)["total_repayable"] <= budget:
+            if prime_pricing.calculate_prime(candidate, tiers)["total_repayable"] <= budget:
                 break
             candidate -= 1
         if candidate >= tier_min:
@@ -295,8 +296,7 @@ def evaluate(
     are treated as missing, same as an applicant who left the form blank.
     """
     amount = Decimal(str(amount_requested))
-    max_amount = prime_pricing.PRIME_MAX_AMOUNT
-    min_amount = prime_pricing.PRIME_MIN_AMOUNT
+    min_amount, max_amount = prime_pricing.bounds()
 
     if application is None:
         application = (
