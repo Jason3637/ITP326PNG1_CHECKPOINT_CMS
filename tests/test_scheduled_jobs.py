@@ -15,7 +15,7 @@ from app.models.enums import (
     RepaymentFrequency,
     RepaymentStatus,
 )
-from app.services import repayments_scheduler
+from app.services import ledger, repayments_scheduler
 from app.services.interest_calculation import amortize
 
 
@@ -53,13 +53,19 @@ def _make_active_loan(user, *, term_months=3):
     return loan
 
 
+def _today() -> date:
+    # The jobs work in Port Moresby dates; the server (UTC in CI) can be a
+    # day behind, so due dates are set relative to the same "today".
+    return ledger.today_local()
+
+
 def _backdate(row: RepaymentSchedule, days_ago: int):
-    row.due_date = date.today() - timedelta(days=days_ago)
+    row.due_date = _today() - timedelta(days=days_ago)
     db.session.commit()
 
 
 def _bring_forward(row: RepaymentSchedule, days_from_now: int):
-    row.due_date = date.today() + timedelta(days=days_from_now)
+    row.due_date = _today() + timedelta(days=days_from_now)
     db.session.commit()
 
 

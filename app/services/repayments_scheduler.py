@@ -17,6 +17,14 @@ from .interest_calculation import installment_count
 _CENTS = Decimal("0.01")
 
 
+def _today() -> date:
+    """Due dates are Port Moresby calendar dates, and so is "today" - the
+    server's own clock (UTC on Railway) is ten hours behind."""
+    from . import ledger
+
+    return ledger.today_local()
+
+
 def _add_months(d: date, months: int) -> date:
     """Add whole months, clamping the day to the target month's last day."""
     total = d.month - 1 + months
@@ -115,16 +123,13 @@ def generate_bullet_schedule(
 
 
 def sync_loan_overdue_status(loan) -> None:
-    """Promote ACTIVE -> OVERDUE when the loan has >=1 OVERDUE installment,
-    demote OVERDUE -> ACTIVE when none remain. Does not touch PAID/CLOSED
-    loans. Called from flip_overdue_installments() (daily) and from
-    payment_processing.verify_payment() (a verified payment may clear the
-    last overdue installment).
-    """
-    if loan.status not in (LoanStatus.ACTIVE, LoanStatus.OVERDUE):
-        return
-    has_overdue = any(r.status == RepaymentStatus.OVERDUE for r in loan.repayment_schedule)
-    loan.status = LoanStatus.OVERDUE if has_overdue else LoanStatus.ACTIVE
+    """ACTIVE <-> OVERDUE by the one shared rule, penalties.is_overdue():
+    past the due date (Port Moresby) with the ledger still owing - so a loan
+    whose original amount is paid but whose penalty isn't stays OVERDUE.
+    Called from the daily sweep and from payment_processing.verify_payment()."""
+    from . import penalties
+
+    penalties.sync_status(loan)
 
 
 # =========================================================== daily maintenance
@@ -148,7 +153,7 @@ def flip_overdue_installments() -> list[RepaymentSchedule]:
     until this job next runs. Idempotent - only currently-`upcoming` rows are
     touched, so re-running it is always safe.
     """
-    today = date.today()
+    today = _today()
     rows = (
         RepaymentSchedule.query.filter(
             RepaymentSchedule.status == RepaymentStatus.UPCOMING,
@@ -192,7 +197,7 @@ def send_due_soon_reminders() -> list[dict]:
     returns, for the caller (the script) to report on.
     """
     lead = current_app.config["REPAYMENT_REMINDER_LEAD_DAYS"]
-    today = date.today()
+    today = _today()
     window_end = today + timedelta(days=lead)
 
     rows = (

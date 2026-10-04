@@ -364,6 +364,24 @@ def _installment_outcome(row) -> str:
     return "upcoming"
 
 
+def _penalty_history(customer: User) -> dict:
+    """Late-payment penalties charged across the customer's loans, from the
+    ledger - each with its loan, amount, date and reason."""
+    from . import penalties
+
+    items = []
+    for loan in Loan.query.filter_by(user_id=customer.id).order_by(Loan.id).all():
+        for p in penalties.describe(loan.id):
+            items.append({"loan_id": loan.id, **p})
+    return {
+        "applicable": True,
+        "policy": penalties.policy_text(),
+        "count": len(items),
+        "total_charged": round(sum(i["amount"] for i in items), 2),
+        "items": items,
+    }
+
+
 def customer_history(a: LoanApplication, viewer: User) -> dict:
     """History of the customer behind application `a`. Loan officers may
     only use this while `a` is open (in the review pipeline) - a decided
@@ -482,13 +500,7 @@ def customer_history(a: LoanApplication, viewer: User) -> dict:
             "payments_rejected": payments["rejected"],
             "payments_awaiting_verification": payments["reported"],
         },
-        "penalties": {
-            "applicable": False,
-            "note": (
-                "PRIME loans carry no late-payment penalty or fee in this system - "
-                "none are charged or tracked. Late repayment shows in repayment_record."
-            ),
-        },
+        "penalties": _penalty_history(customer),
         "previous_applications": [
             {
                 "id": p.id,
