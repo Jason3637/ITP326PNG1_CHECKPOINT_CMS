@@ -4,7 +4,6 @@ actions, since nothing auto-advances PAID -> CLOSED or ACTIVE -> CLOSED.
 """
 
 from app.services import documents, loan_processing
-from app.services.errors import ServiceError
 
 
 def _make_document(user, *, document_type="proof_of_income"):

@@ -125,7 +125,7 @@ def test_officer_cannot_verify_or_reject_repayments(client, people, disbursed):
 
 def test_officer_cannot_close_or_write_off_loans(client, people, disbursed):
     loan, txn_id = disbursed
-    oh, ah = people["oh"], people["ah"]
+    oh = people["oh"]
     assert client.post(f"/api/loans/{loan['id']}/write-off", headers=oh, json={"note": "x"}).status_code == 403
     assert client.post(f"/api/admin/loans/{loan['id']}/write-off", headers=oh,
                        json={"reason": "x"}).status_code == 403

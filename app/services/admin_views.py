@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from statistics import median
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, or_
 
 from app.extensions import db
 from app.models import (
