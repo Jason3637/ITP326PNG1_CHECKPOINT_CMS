@@ -288,7 +288,7 @@ def describe(loan_id: int) -> list[dict]:
             "amount": float(Decimal(e.amount)),
             "applied_on": e.effective_date.isoformat(),
             "days_late": days_late,
-            "reason": e.note or f"Late payment ({days_late} days late)",
+            "reason": e.note or (f"Late payment ({days_late} days late)" if days_late is not None else "Late payment"),
         }
         for e, days_late in rows
     ]
