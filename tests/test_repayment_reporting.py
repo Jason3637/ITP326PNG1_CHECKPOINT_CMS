@@ -16,6 +16,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models import AuditLog, Document, RepaymentSchedule
 from app.models.enums import DocumentType
+from app.services import ledger
 
 import _workflow
 
@@ -104,9 +105,11 @@ def test_payment_date_defaults_to_today_and_rejects_future_dates(
         json={"repayment_schedule_id": row.id, "amount": 100, "payment_method": "cash"},
     )
     assert r.status_code == 201, r.get_json()
-    assert r.get_json()["transaction"]["payment_date"] == date.today().isoformat()
+    # "Today" is the Port Moresby date - the server (UTC in CI) can be a day behind.
+    today = ledger.today_local()
+    assert r.get_json()["transaction"]["payment_date"] == today.isoformat()
 
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    tomorrow = (today + timedelta(days=1)).isoformat()
     r = client.post(
         "/api/payments/repay",
         headers=ch,
