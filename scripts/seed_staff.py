@@ -1,10 +1,11 @@
 """One-off staff account seeding (loan_officer / admin).
 
 Public registration (``POST /api/auth/register``) always creates a `customer`
-account by design - see BACKEND.md -> Authentication flow. Staff accounts
-(`loan_officer`, `admin`) have no HTTP provisioning path on purpose, so this
-script is the only way to create one. It is a standalone CLI tool, NOT a route
-- nothing here is reachable over HTTP.
+account by design - see BACKEND.md -> Authentication flow. Once an admin
+exists, staff accounts are normally created over the API by that admin
+(``POST /api/admin/staff``, see app/services/staff_accounts.py). This script
+is for bootstrapping the FIRST admin, or for when no admin can sign in. It is
+a standalone CLI tool, NOT a route - nothing here is reachable over HTTP.
 
 What it does:
     1. Hashes a securely-generated (or operator-supplied) temporary password

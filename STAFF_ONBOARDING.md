@@ -1,16 +1,30 @@
 # Staff Onboarding (loan_officer / admin)
 
 Public registration (`POST /api/auth/register`) always creates a `customer`
-account — that's deliberate, see BACKEND.md → *Authentication flow*. There is
-no HTTP endpoint that creates a `loan_officer` or `admin` account. Until a
-proper admin-facing "create staff user" endpoint exists (see HANDOFF.md →
-*Staff onboarding*), creating one means running `scripts/seed_staff.py`
-directly against the database, then having that person complete MFA
-enrollment themselves through the normal public flow — the exact same flow a
-customer goes through, so they end up on identical security footing (MFA
-mandatory, backup codes, audited).
+account — that's deliberate, see BACKEND.md → *Authentication flow*. Staff
+accounts (`loan_officer` / `admin`) are created by an administrator:
 
-Repeat this whole process for every new hire.
+- **Normally — over the API, by a signed-in admin** (Swagger at `/api/docs`
+  until an Administrator UI exists):
+  - `POST /api/admin/staff` `{"email", "full_name", "role": "loan_officer" | "admin", "phone_number"?, "is_active"?}`
+    → the new account plus a generated `temporary_password`, shown **once**
+    in that response only (not stored in plaintext, not logged, never
+    returned again).
+  - `POST /api/admin/staff/<id>/reset-password` → a new `temporary_password`
+    for an existing staff account; the old password stops working at once.
+    Their MFA enrolment is kept, so they sign in with the new password and
+    their existing authenticator.
+  - Both are audited (`staff_account_created`, `staff_password_reset`) with
+    the admin as actor — never the password.
+- **Bootstrapping the first admin** (or if no admin can sign in) — run
+  `scripts/seed_staff.py` directly against the database, as below.
+
+Either way the person then completes MFA enrollment themselves through the
+normal public flow (section 2) — the exact same flow a customer goes through,
+so they end up on identical security footing (MFA mandatory, backup codes,
+audited).
+
+Repeat this for every new hire.
 
 ## 1. Seed the account
 
@@ -54,10 +68,9 @@ railway run --service ITP326PNG1_CHECKPOINT_CMS \
 
 **Hand the temp password to the person over a secure, private channel** —
 password manager share, verbal call, a secrets vault link. Never plain email
-or chat. This step matters more than usual here: there is currently no
-password-change or reset endpoint anywhere in the API (see *Known
-limitation* below), so this temporary password is their real password until
-that changes.
+or chat. This step matters more than usual here: there is no self-service
+password change yet (see *Known limitations* below), so this temporary
+password is their real password until an admin resets it.
 
 ## 2. They complete enrollment (exactly like a customer would)
 
@@ -113,13 +126,14 @@ script), with the operator's identity in `details.created_by` instead.
 
 ## Known limitations
 
-- **No password-change or reset endpoint exists yet.** If a staff member's
-  temp password is compromised or they simply want to change it, the only
-  fix today is re-running a direct DB update — there's no self-service or
-  admin-facing path. Worth prioritizing before onboarding many staff.
-- **This whole process is a stand-in.** HANDOFF.md already flags "Staff
-  onboarding... add an admin-only 'create staff user' endpoint if needed" as
-  a deferred item. If staff turnover becomes routine, that endpoint (gated
-  `@roles_required("admin")`, same hashing/audit logic as this script) is the
-  natural next step — this doc's job is to make the manual process safe and
-  repeatable until then, not to be the permanent answer.
+- **No self-service password change.** Staff can't change their own
+  password; an admin resets it (`POST /api/admin/staff/<id>/reset-password`)
+  and hands over the new temporary one. Customers have no reset path at all
+  yet.
+- **A reset doesn't sign out existing sessions.** The old password stops
+  working, but refresh tokens already issued stay valid until they expire
+  (30 days). Inactive accounts can't log in or refresh, but there is no
+  endpoint to deactivate an account yet — if an account may be compromised,
+  that currently means a direct database update (`users.is_active = false`).
+- **No Administrator UI yet** — the admin endpoints are used through
+  Swagger (`/api/docs`) or an API client for now.

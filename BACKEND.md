@@ -124,7 +124,7 @@ Token types (all JWT, distinguished by a `scope` claim):
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/api/auth/register` | none | create a `customer` account (staff are provisioned manually) |
+| POST | `/api/auth/register` | none | create a `customer` account (staff accounts are created by an admin - `POST /api/admin/staff`) |
 | POST | `/api/auth/mfa/setup` | `mfa_setup_token` | generate TOTP secret + QR |
 | POST | `/api/auth/mfa/verify-setup` | `mfa_setup_token` | confirm code, enable MFA, return backup codes (once) |
 | POST | `/api/auth/login` | none | verify password → `mfa_challenge_token` (or `mfa_setup_token` if MFA not yet set up) |
@@ -310,6 +310,7 @@ any open status --admin early exit--> REJECTED
 | **Verify / reject a repayment** | — | ❌ | ✅ |
 | Close a paid loan; write off a loan | — | ❌ | ✅ |
 | System parameters; audit logs | — | ❌ | ✅ |
+| Create staff accounts; reset a staff password | — | ❌ | ✅ |
 
 \* Loan officers reach customer history only through an application that is still open — there is no customer-id lookup. Within that, visibility is **team-wide by design**: any loan officer may view it for any open application, not only ones claimed by them (pinned by `test_customer_history_is_team_wide_for_loan_officers`).
 Admin-only actions are checked at the route **and** in the service layer (`loan_processing._require_admin`, `payment_processing.verify_payment`), covered by `tests/test_loan_officer_rbac.py`. An admin may act in the officer role (claim, recommend) and then decide, but each is a separate, separately audited call; the decision's audit entry records `same_actor_as_recommender` and `overrides_recommendation`.
@@ -582,6 +583,31 @@ Loan Officer workflow actions (all `entity_type=LoanApplication`):
 | `customer_history_viewed` | officer/admin | `customer_id`, `application_status` |
 | `loan_application_returned_to_officer` | admin | `from`/`to` status, `admin_return_id`, `recommendation_id`, `reason` |
 | `loan_application_decision` | admin | `decision`, `note`, `recommendation_id`, `overrides_recommendation`, `same_actor_as_recommender` (early exit: `early_exit`, `from`) |
+
+### Admin: staff accounts
+
+**Admin only.** No Administrator UI yet - use Swagger (`/api/docs`).
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| POST | `/api/admin/staff` | `{"email", "full_name", "role": "loan_officer" or "admin", "phone_number"?, "is_active"? (default true)}` | 201 `{user, temporary_password, next_step}`; `customer` role → 400; email taken → 409 |
+| POST | `/api/admin/staff/<id>/reset-password` | — | 200 `{user, temporary_password, next_step}`; not a staff account → 400 |
+
+- The temporary password is generated server-side (`secrets.token_urlsafe`),
+  only its hash is stored, and it appears in that one response (sent with
+  `Cache-Control: no-store`) - never in the audit log, a log line, or any
+  other endpoint.
+- New accounts start with `totp_enabled=false`, so first login answers
+  `mfa_required: "setup"` - the same public MFA flow as registered and
+  seeded accounts.
+- A reset keeps MFA enrolment (TOTP secret and backup codes): a forgotten
+  password isn't a lost authenticator, and the temporary password alone
+  still can't sign anyone in. It does **not** revoke refresh tokens already
+  issued (30 days), and there is no deactivate endpoint yet - see
+  STAFF_ONBOARDING.md → *Known limitations*.
+- Audited as `staff_account_created` (`email`, `role`, `is_active`) and
+  `staff_password_reset` (`email`, `role`, `mfa_enrolment_kept`), actor =
+  the admin, `entity_type=User`.
 
 ### Admin: system parameters
 

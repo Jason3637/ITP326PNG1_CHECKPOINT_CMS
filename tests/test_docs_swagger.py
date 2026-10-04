@@ -54,6 +54,9 @@ EXPECTED_ENDPOINTS = {
     # Customer verification
     ("post", "/officer/applications/{application_id}/customer-verification/invalidate"),
     ("post", "/admin/customer-verifications/invalidate-outdated"),
+    # Staff account administration
+    ("post", "/admin/staff"),
+    ("post", "/admin/staff/{user_id}/reset-password"),
 }
 
 # Endpoints that take a JSON body and must declare a body model.
@@ -73,6 +76,7 @@ BODY_ENDPOINTS = {
     ("post", "/payments/repay"),
     ("post", "/payments/{transaction_id}/verify"),
     ("put", "/admin/parameters"),
+    ("post", "/admin/staff"),
     ("post", "/loans/applications/{application_id}/resume-review"),
     ("post", "/loans/applications/{application_id}/assign"),
     ("post", "/loans/applications/{application_id}/return-to-officer"),
