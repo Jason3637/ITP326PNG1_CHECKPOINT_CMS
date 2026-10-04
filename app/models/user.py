@@ -32,6 +32,13 @@ class User(db.Model):
     is_active = db.Column(
         db.Boolean, nullable=False, default=True, server_default=db.text("true")
     )
+    # Stamped into every JWT issued to this user (claim "tv"). Bumping it -
+    # e.g. on an admin password reset - makes every token issued before
+    # unusable: access, refresh and MFA step tokens alike (see
+    # app/api/auth/tokens.py).
+    token_version = db.Column(
+        db.Integer, nullable=False, default=0, server_default=db.text("0")
+    )
 
     # ------------------------------------------------------------------ MFA / TOTP
     # SECURITY: `totp_secret` stores the TOTP shared secret **encrypted at rest**

@@ -11,7 +11,9 @@ accounts (`loan_officer` / `admin`) are created by an administrator:
     in that response only (not stored in plaintext, not logged, never
     returned again).
   - `POST /api/admin/staff/<id>/reset-password` → a new `temporary_password`
-    for an existing staff account; the old password stops working at once.
+    for an existing staff account; the old password stops working at once
+    and they are signed out everywhere (every session issued before the
+    reset is rejected).
     Their MFA enrolment is kept, so they sign in with the new password and
     their existing authenticator.
   - Both are audited (`staff_account_created`, `staff_password_reset`) with
@@ -130,10 +132,9 @@ script), with the operator's identity in `details.created_by` instead.
   password; an admin resets it (`POST /api/admin/staff/<id>/reset-password`)
   and hands over the new temporary one. Customers have no reset path at all
   yet.
-- **A reset doesn't sign out existing sessions.** The old password stops
-  working, but refresh tokens already issued stay valid until they expire
-  (30 days). Inactive accounts can't log in or refresh, but there is no
-  endpoint to deactivate an account yet — if an account may be compromised,
-  that currently means a direct database update (`users.is_active = false`).
+- **No endpoint to deactivate an account yet.** A reset signs the account
+  out everywhere, but to keep someone out entirely (e.g. they've left) set
+  `users.is_active = false` in the database for now — inactive accounts can't
+  log in or refresh.
 - **No Administrator UI yet** — the admin endpoints are used through
   Swagger (`/api/docs`) or an API client for now.

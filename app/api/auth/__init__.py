@@ -23,6 +23,7 @@ from .tokens import (
     issue_auth_tokens,
     mfa_challenge_token,
     mfa_setup_token,
+    version_claims,
 )
 
 ns = Namespace(
@@ -415,7 +416,7 @@ class Refresh(Resource):
             abort(401, "Account is disabled.")
         access = create_access_token(
             identity=str(user.id),
-            additional_claims={"scope": SCOPE_ACCESS, "role": str(user.role)},
+            additional_claims=version_claims(user, scope=SCOPE_ACCESS, role=str(user.role)),
         )
         audit.record(
             "token_refreshed",
