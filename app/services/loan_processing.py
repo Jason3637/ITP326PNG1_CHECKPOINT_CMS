@@ -27,8 +27,10 @@ officer role, but each action stays a separate, separately audited call -
 nothing here combines "recommend" and "decide".
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
+
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import (
@@ -40,6 +42,8 @@ from app.models import (
     InformationResponse,
     Loan,
     LoanApplication,
+    LoanLedgerEntry,
+    LoanTermsSnapshot,
     OfficerRecommendation,
     Referee,
     TermsAcceptance,
@@ -47,6 +51,8 @@ from app.models import (
 )
 from app.models.enums import (
     DisbursementMethod,
+    LedgerActorKind,
+    LedgerEntryType,
     DocumentType,
     EmploymentStatus,
     InformationRequestStatus,
@@ -59,7 +65,15 @@ from app.models.enums import (
     UserRole,
 )
 
-from . import audit, credit_evaluation, documents, notifications, prime_pricing, verification
+from . import (
+    audit,
+    credit_evaluation,
+    documents,
+    notifications,
+    pricing_policy,
+    prime_pricing,
+    verification,
+)
 from . import customer_verification as cv_service
 from .errors import ServiceError
 
@@ -391,6 +405,7 @@ def submit_application(
         residential_address=residence_val,
         employer_name=employer_val,
     )
+    pricing_policy.lock_quote(application, pricing)
     db.session.add(application)
     db.session.flush()
 
@@ -1361,6 +1376,10 @@ def disburse_application(
     from . import repayments_scheduler  # local import: avoid a circular import
 
     _require_admin(admin, "record a disbursement")
+    # Serialise concurrent disbursements of this application (Postgres row
+    # lock; a no-op on SQLite). The unique constraints on loans.application_id
+    # and disbursements.application_id are the real guarantee - see below.
+    db.session.refresh(application, with_for_update=True)
     _require_status(application, LoanApplicationStatus.AWAITING_DISBURSEMENT)
 
     try:
@@ -1369,35 +1388,73 @@ def disburse_application(
         allowed = ", ".join(m.value for m in DisbursementMethod)
         raise LoanProcessingError(f"method must be one of: {allowed}.")
 
-    pricing = prime_pricing.calculate_prime(application.amount_requested)
+    terms = _locked_terms(application)
     now = datetime.now(timezone.utc)
+    disbursed_on = prime_pricing.local_date(now)
+    due_date = disbursed_on + timedelta(days=terms["term_days"])
 
-    loan = Loan(
-        application_id=application.id,
-        user_id=application.user_id,
-        principal_amount=pricing["amount"],
-        interest_rate=pricing["rate"],
-        term_days=pricing["term_days"],
-        monthly_payment=pricing["total_repayable"],
-        total_repayable=pricing["total_repayable"],
-        status=LoanStatus.ACTIVE,
-        disbursed_at=now,
-    )
-    db.session.add(loan)
-    db.session.flush()
+    try:
+        loan = Loan(
+            application_id=application.id,
+            user_id=application.user_id,
+            principal_amount=terms["principal"],
+            interest_rate=terms["interest_rate"],
+            term_days=terms["term_days"],
+            monthly_payment=terms["total"],
+            total_repayable=terms["total"],
+            status=LoanStatus.ACTIVE,
+            disbursed_at=now,
+        )
+        db.session.add(loan)
+        db.session.flush()
 
-    schedule = repayments_scheduler.generate_bullet_schedule(loan)
+        schedule = repayments_scheduler.generate_bullet_schedule(loan, start_date=disbursed_on)
 
-    disbursement = Disbursement(
-        loan_id=loan.id,
-        method=disb_method,
-        amount=pricing["amount"],
-        method_reference=(method_reference or "").strip() or None,
-        disbursed_at=now,
-        recorded_by=admin.id,
-        note=note,
-    )
-    db.session.add(disbursement)
+        disbursement = Disbursement(
+            application_id=application.id,
+            loan_id=loan.id,
+            method=disb_method,
+            amount=terms["principal"],
+            method_reference=(method_reference or "").strip() or None,
+            disbursed_at=now,
+            recorded_by=admin.id,
+            note=note,
+        )
+        db.session.add(disbursement)
+        db.session.flush()
+
+        db.session.add(LoanTermsSnapshot(
+            loan_id=loan.id,
+            application_id=application.id,
+            disbursement_id=disbursement.id,
+            pricing_version_id=terms["pricing_version_id"],
+            penalty_policy_version_id=terms["penalty_policy_version_id"],
+            prime_category=terms["category"],
+            principal=terms["principal"],
+            interest_rate=terms["interest_rate"],
+            interest_amount=terms["interest_amount"],
+            original_total_due=terms["total"],
+            term_days=terms["term_days"],
+            disbursed_at=now,
+            disbursed_local_date=disbursed_on,
+            due_date=due_date,
+            created_by=admin.id,
+        ))
+        db.session.add(LoanLedgerEntry(
+            loan_id=loan.id,
+            entry_type=LedgerEntryType.ORIGINAL_OBLIGATION,
+            amount=terms["total"],
+            effective_date=disbursed_on,
+            created_by=admin.id,
+            created_by_kind=LedgerActorKind.ADMIN,
+            disbursement_id=disbursement.id,
+        ))
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        raise LoanProcessingError(
+            f"Application #{application.id} has already been disbursed.", status_code=409
+        )
 
     audit.record(
         "loan_disbursed",
@@ -1418,6 +1475,28 @@ def disburse_application(
 
     notifications.notify_loan_approved(loan)
     return application, loan
+
+
+def _locked_terms(application: LoanApplication) -> dict:
+    """The terms a loan is disbursed on: the quote locked when the customer
+    submitted. An application from before quotes existed (none should remain
+    after migration e4a9b7c2d158) is quoted from the current versions."""
+    if application.pricing_version_id is None:
+        pricing_policy.lock_quote(
+            application, prime_pricing.calculate_prime(application.amount_requested)
+        )
+    principal = Decimal(application.amount_requested).quantize(Decimal("0.01"))
+    interest = Decimal(application.quoted_interest_amount)
+    return {
+        "pricing_version_id": application.pricing_version_id,
+        "penalty_policy_version_id": application.penalty_policy_version_id,
+        "category": application.prime_category,
+        "principal": principal,
+        "interest_rate": Decimal(application.quoted_interest_rate),
+        "interest_amount": interest,
+        "total": principal + interest,
+        "term_days": prime_pricing.PRIME_TERM_DAYS,
+    }
 
 
 # ---------------------------------------------------------------- 5. closure

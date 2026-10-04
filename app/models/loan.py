@@ -75,8 +75,22 @@ class Loan(db.Model):
         "Disbursement",
         back_populates="loan",
         uselist=False,
-        cascade="all, delete-orphan",
-        passive_deletes=True,
+        passive_deletes="all",
+    )
+    # The permanent record (insert-only, ON DELETE RESTRICT - see
+    # app/models/loan_records.py). passive_deletes="all": the ORM never
+    # touches these rows when a loan is deleted; the database refuses.
+    terms_snapshot = db.relationship(
+        "LoanTermsSnapshot", back_populates="loan", uselist=False, passive_deletes="all"
+    )
+    ledger_entries = db.relationship(
+        "LoanLedgerEntry",
+        back_populates="loan",
+        order_by="LoanLedgerEntry.id",
+        passive_deletes="all",
+    )
+    closure = db.relationship(
+        "LoanClosure", back_populates="loan", uselist=False, passive_deletes="all"
     )
 
     def __repr__(self) -> str:

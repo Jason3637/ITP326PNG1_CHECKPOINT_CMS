@@ -52,6 +52,19 @@ class LoanApplication(db.Model):
     # here - they're derived from amount_requested + this category on read,
     # keeping calculate_prime() the single source of truth.
     prime_category = db.Column(db.String(20))
+    # The PRIME quote, locked when the customer submits: the pricing and
+    # penalty-policy versions in force then and the amounts they produced.
+    # Insert-once (see app/models/immutability.py); the loan-terms snapshot
+    # copies it at disbursement, so a later rate change never reprices it.
+    pricing_version_id = db.Column(
+        db.Integer, db.ForeignKey("prime_pricing_versions.id", ondelete="RESTRICT")
+    )
+    penalty_policy_version_id = db.Column(
+        db.Integer, db.ForeignKey("penalty_policy_versions.id", ondelete="RESTRICT")
+    )
+    quoted_interest_rate = db.Column(db.Numeric(6, 4))
+    quoted_interest_amount = db.Column(db.Numeric(12, 2))
+    quoted_total_repayable = db.Column(db.Numeric(12, 2))
     disbursement_method_requested = db.Column(
         pg_enum(DisbursementMethod, "disbursement_method"), nullable=True
     )

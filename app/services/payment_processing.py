@@ -19,8 +19,10 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
-from app.models import Loan, PaymentTransaction, RepaymentSchedule, User
+from app.models import Loan, LoanLedgerEntry, PaymentTransaction, RepaymentSchedule, User
 from app.models.enums import (
+    LedgerActorKind,
+    LedgerEntryType,
     LoanStatus,
     PaymentStatus,
     RepaymentStatus,
@@ -211,6 +213,18 @@ def verify_payment(
     now = datetime.now(timezone.utc)
     txn.status = PaymentStatus.VERIFIED
     txn.paid_at = now
+    if loan is not None:
+        # Same transaction as the status change; the unique index on
+        # payment_transaction_id makes a double post impossible.
+        db.session.add(LoanLedgerEntry(
+            loan_id=loan.id,
+            entry_type=LedgerEntryType.VERIFIED_REPAYMENT,
+            amount=-Decimal(txn.amount),
+            effective_date=txn.payment_date,
+            created_by=actor.id,
+            created_by_kind=LedgerActorKind.ADMIN,
+            payment_transaction_id=txn.id,
+        ))
 
     pay_amount = Decimal(txn.amount)
     loan_completed = False

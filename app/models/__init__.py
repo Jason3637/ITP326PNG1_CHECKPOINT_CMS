@@ -16,6 +16,10 @@ Entity map (diagram → table):
                              admin_returns,
                              verification_items, officer_recommendations,
                              customer_verifications
+    Administrator operations -> loan_terms_snapshots, loan_ledger_entries,
+                             loan_closures, scheduled_job_runs,
+                             prime_pricing_versions (+ tiers),
+                             penalty_policy_versions (+ tiers)
 """
 
 from .enums import (
@@ -26,6 +30,9 @@ from .enums import (
     EmploymentStatus,
     IdDocumentType,
     InformationRequestStatus,
+    LedgerActorKind,
+    LedgerEntryType,
+    LoanTimeliness,
     InformationRequestType,
     LoanApplicationStatus,
     LoanClosureReason,
@@ -45,6 +52,13 @@ from .document import Document
 from .information_request import InformationRequest, InformationResponse
 from .loan import Loan
 from .loan_application import LoanApplication
+from .loan_records import LoanClosure, LoanLedgerEntry, LoanTermsSnapshot, ScheduledJobRun
+from .pricing_policy import (
+    PenaltyPolicyTier,
+    PenaltyPolicyVersion,
+    PrimePricingTier,
+    PrimePricingVersion,
+)
 from .officer_recommendation import OfficerRecommendation
 from .payment_transaction import PaymentTransaction
 from .referee import Referee
@@ -53,6 +67,7 @@ from .system_parameter import SystemParameter
 from .terms_acceptance import TermsAcceptance
 from .user import MfaBackupCode, User
 from .verification_item import VerificationItem
+from . import immutability  # noqa: E402,F401  registers the insert-only guards
 
 __all__ = [
     "AdminReturn",
@@ -64,11 +79,19 @@ __all__ = [
     "InformationResponse",
     "Loan",
     "LoanApplication",
+    "LoanClosure",
+    "LoanLedgerEntry",
+    "LoanTermsSnapshot",
     "MfaBackupCode",
     "OfficerRecommendation",
     "PaymentTransaction",
+    "PenaltyPolicyTier",
+    "PenaltyPolicyVersion",
+    "PrimePricingTier",
+    "PrimePricingVersion",
     "Referee",
     "RepaymentSchedule",
+    "ScheduledJobRun",
     "SystemParameter",
     "TermsAcceptance",
     "User",
@@ -82,9 +105,12 @@ __all__ = [
     "IdDocumentType",
     "InformationRequestStatus",
     "InformationRequestType",
+    "LedgerActorKind",
+    "LedgerEntryType",
     "LoanApplicationStatus",
     "LoanClosureReason",
     "LoanStatus",
+    "LoanTimeliness",
     "OfficerRecommendationType",
     "PaymentStatus",
     "RepaymentFrequency",

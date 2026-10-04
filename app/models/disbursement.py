@@ -18,6 +18,15 @@ class Disbursement(db.Model):
     __tablename__ = "disbursements"
 
     id = db.Column(db.Integer, primary_key=True)
+    # One disbursement per application, enforced by the database: a second
+    # insert for the same application fails with a unique violation even if
+    # two requests race past every application-level check.
+    application_id = db.Column(
+        db.Integer,
+        db.ForeignKey("loan_applications.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
     loan_id = db.Column(
         db.Integer,
         db.ForeignKey("loans.id", ondelete="CASCADE"),
@@ -40,6 +49,16 @@ class Disbursement(db.Model):
         nullable=True,
     )
     note = db.Column(db.String(500))
+    # When the row was written (disbursed_at is when the money moved).
+    recorded_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # BSP only: the destination with all but the last 4 characters hidden.
+    destination_masked = db.Column(db.String(64))
+    # Receipt / acknowledgement file, stored like every other document.
+    evidence_document_id = db.Column(
+        db.Integer, db.ForeignKey("documents.id", ondelete="RESTRICT")
+    )
 
     # ---------------------------------------------------------------- relationships
     loan = db.relationship("Loan", back_populates="disbursement")
