@@ -90,7 +90,7 @@ def test_officer_cannot_record_a_disbursement(client, people, workflow, apply_pa
     r = client.post(
         f"/api/loans/applications/{app_id}/disburse",
         headers=people["oh"],
-        json={"method": "cash_on_hand"},
+        json={"method": "cash_on_hand", "method_reference": "CASH-ACK-0001"},
     )
     assert r.status_code == 403
     assert _status(app_id) == "awaiting_disbursement"
@@ -125,20 +125,18 @@ def test_officer_cannot_verify_or_reject_repayments(client, people, disbursed):
 
 def test_officer_cannot_close_or_write_off_loans(client, people, disbursed):
     loan, txn_id = disbursed
-    oh, ah = people["oh"], people["ah"]
+    oh = people["oh"]
     assert client.post(f"/api/loans/{loan['id']}/write-off", headers=oh, json={"note": "x"}).status_code == 403
-    client.post(f"/api/payments/{txn_id}/verify", headers=ah, json={"decision": "verified"})
+    assert client.post(f"/api/admin/loans/{loan['id']}/write-off", headers=oh,
+                       json={"reason": "x"}).status_code == 403
     db.session.expire_all()
-    assert str(db.session.get(Loan, loan["id"]).status) == "paid"
-    assert client.post(f"/api/loans/{loan['id']}/close", headers=oh).status_code == 403
-    db.session.expire_all()
-    assert str(db.session.get(Loan, loan["id"]).status) == "paid"
+    assert str(db.session.get(Loan, loan["id"]).status) == "active"
 
 
 def test_officer_cannot_touch_admin_configuration_or_audit(client, people):
     oh = people["oh"]
     assert client.get("/api/admin/parameters", headers=oh).status_code == 403
-    assert client.put("/api/admin/parameters", headers=oh, json={"min_loan_amount": 1}).status_code == 403
+    assert client.put("/api/admin/parameters", headers=oh, json={"min_monthly_income": 1}).status_code == 403
     assert client.get("/api/reports/audit-logs", headers=oh).status_code == 403
 
 
@@ -153,7 +151,6 @@ def test_admin_only_services_refuse_a_loan_officer_directly(client, people, work
         "return": lambda: loan_processing.return_to_officer(review, officer, "x"),
         "assign": lambda: loan_processing.assign_application(review, officer, officer.id),
         "disburse": lambda: loan_processing.disburse_application(review, officer, method="cash_on_hand"),
-        "close": lambda: loan_processing.close_loan(db.session.get(Loan, disbursed[0]["id"]), officer),
         "write_off": lambda: loan_processing.write_off_loan(db.session.get(Loan, disbursed[0]["id"]), officer),
         "verify_payment": lambda: payment_processing.verify_payment(officer, disbursed[1], decision="verified"),
     }

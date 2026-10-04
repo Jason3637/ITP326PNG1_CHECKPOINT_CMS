@@ -141,7 +141,12 @@ def upload_document(
     content_type: str | None,
     loan_application_id: int | None = None,
     id_document_type: str | None = None,
+    uploaded_by: User | None = None,
 ) -> Document:
+    """Store a file for `owner`. `uploaded_by` is who actually sent it, when
+    that isn't the owner (an admin filing disbursement evidence under the
+    borrower) - it's the audited actor."""
+    actor = uploaded_by or owner
     try:
         doc_type = DocumentType(document_type)
     except ValueError:
@@ -193,10 +198,11 @@ def upload_document(
     db.session.flush()
     audit.record(
         "document_uploaded",
-        actor_id=owner.id,
+        actor_id=actor.id,
         entity_type="Document",
         entity_id=document.id,
         details={
+            "owner_id": owner.id,
             "document_type": doc_type.value,
             "id_document_type": id_type.value if id_type else None,
             "storage_path": storage_path,
@@ -205,7 +211,7 @@ def upload_document(
         },
         commit=False,
     )
-    _supersede_prior_versions(document, owner)
+    _supersede_prior_versions(document, actor)
     db.session.commit()
     return document
 

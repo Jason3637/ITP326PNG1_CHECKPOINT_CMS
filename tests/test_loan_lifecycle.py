@@ -126,11 +126,11 @@ def test_apply_through_full_chain_to_paid(client, make_user, auth_header, apply_
     pay = r.get_json()
     assert pay["installment"]["status"] == "paid"
     assert pay["loan_completed"] is True
-    assert pay["loan_status"] == "paid"
+    assert pay["loan_status"] == "closed", "paid in full closes automatically"
 
     r = client.get("/api/accounts/summary", headers=ch)
     counts = r.get_json()["counts"]
-    assert counts["active"] == 0 and counts["paid"] == 1
+    assert counts["active"] == 0 and counts["closed"] == 1
 
 
 def test_only_admin_can_reject_early(client, make_user, auth_header, apply_payload):

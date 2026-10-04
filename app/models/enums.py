@@ -55,6 +55,9 @@ class LoanApplicationStatus(enum.StrEnum):
     RETURNED_TO_OFFICER: an admin sent a recommended application back to its
     officer for more work (reason kept in AdminReturn); the officer resumes
     review from there.
+
+    DISBURSED: the money has been paid out and the Loan exists - the
+    application's journey is over; the loan carries on from here.
     """
 
     DRAFT = "draft"
@@ -68,6 +71,7 @@ class LoanApplicationStatus(enum.StrEnum):
     REJECTED = "rejected"
     AWAITING_DISBURSEMENT = "awaiting_disbursement"
     RETURNED_TO_OFFICER = "returned_to_officer"
+    DISBURSED = "disbursed"
 
 
 class LoanStatus(enum.StrEnum):
@@ -119,6 +123,9 @@ class DocumentType(enum.StrEnum):
     RECEIPT = "receipt"
     LOAN_FILE = "loan_file"
     PROOF_OF_INCOME = "proof_of_income"
+    # Uploaded by an admin: the BSP receipt or signed cash acknowledgement
+    # for a disbursement. Filed under the borrower.
+    DISBURSEMENT_EVIDENCE = "disbursement_evidence"
 
 
 class IdDocumentType(enum.StrEnum):

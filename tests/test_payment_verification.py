@@ -32,7 +32,7 @@ def _disbursed_loan(client, make_user, auth_header, apply_payload):
         f"/api/loans/applications/{app_id}/decision", headers=ah, json={"decision": "approve"}
     )
     r = client.post(
-        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand"}
+        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand", "method_reference": "CASH-ACK-0001"}
     )
     return r.get_json()["loan"], ch, oh, ah
 

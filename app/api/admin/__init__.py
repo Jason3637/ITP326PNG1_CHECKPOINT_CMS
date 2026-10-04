@@ -17,11 +17,6 @@ ns = Namespace("admin", description="Administrator configuration.")
 parameters_in = ns.model(
     "SystemParametersInput",
     {
-        "default_annual_interest_rate": fields.Float(required=False, example=0.18),
-        "min_loan_amount": fields.Float(required=False, example=100),
-        "max_loan_amount": fields.Float(required=False, example=50000),
-        "min_loan_term_months": fields.Integer(required=False, example=1),
-        "max_loan_term_months": fields.Integer(required=False, example=60),
         "min_monthly_income": fields.Float(
             required=False, example=200, description="Credit evaluation (interim model)."
         ),
@@ -225,3 +220,8 @@ class StaffPasswordReset(Resource):
             200,
             _NO_STORE,
         )
+
+
+# Administrator operations (queues, decisions, disbursement, loans, repayments,
+# pricing, analytics) - registered on this namespace.
+from . import operations  # noqa: E402,F401

@@ -1,8 +1,11 @@
-"""System parameters - runtime-editable tunables with config fallback.
+"""System parameters - the short, deliberate list of runtime tunables an
+admin may change live (``PUT /api/admin/parameters``), with config fallback.
 
-Every lending value that Phase B3 read straight off ``current_app.config`` is
-routed through here so an admin can change it live via
-``PUT /api/admin/parameters`` without a redeploy.
+PRIME pricing and the late-penalty tiers are configurable too, but as
+versioned tables (app/services/pricing_policy.py), not here. The old
+interest-rate / loan-amount / loan-term settings were removed: nothing read
+them once PRIME's fixed tiers and 14-day term replaced them. Nothing here
+ever touches an existing loan's terms snapshot.
 """
 
 from __future__ import annotations
@@ -19,15 +22,6 @@ from .errors import ServiceError
 
 # key -> (config seed key, python type, human description)
 _SPEC: dict[str, tuple[str, str, str]] = {
-    "default_annual_interest_rate": (
-        "DEFAULT_ANNUAL_INTEREST_RATE",
-        "rate",
-        "Default annual interest rate as a fraction (0.18 = 18% APR).",
-    ),
-    "min_loan_amount": ("MIN_LOAN_AMOUNT", "money", "Minimum loan amount."),
-    "max_loan_amount": ("MAX_LOAN_AMOUNT", "money", "Maximum loan amount."),
-    "min_loan_term_months": ("MIN_LOAN_TERM_MONTHS", "int", "Minimum loan term in months."),
-    "max_loan_term_months": ("MAX_LOAN_TERM_MONTHS", "int", "Maximum loan term in months."),
     "min_monthly_income": (
         "MIN_MONTHLY_INCOME",
         "money",
@@ -115,6 +109,7 @@ def update(changes: dict, actor_id: int | None) -> dict:
     if unknown:
         raise ServiceError(f"Unknown parameter(s): {', '.join(sorted(unknown))}.")
 
+    before = {k: v["value"] for k, v in get_effective().items()}
     applied = {}
     for key, value in changes.items():
         normalized = _validate(key, value)
@@ -131,7 +126,12 @@ def update(changes: dict, actor_id: int | None) -> dict:
         actor_id=actor_id,
         entity_type="SystemParameter",
         entity_id=",".join(sorted(applied)),
-        details={"changes": applied},
+        details={
+            "changes": {
+                k: {"before": before[k], "after": float(v) if _SPEC[k][1] != "int" else int(v)}
+                for k, v in applied.items()
+            }
+        },
         commit=False,
     )
     db.session.commit()

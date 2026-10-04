@@ -54,7 +54,7 @@ def test_loan_officer_cannot_start_admin_review_or_disburse(client, make_user, a
     assert client.post("/api/loans/applications/1/admin-review", headers=oh).status_code == 403
     assert (
         client.post(
-            "/api/loans/applications/1/disburse", headers=oh, json={"method": "cash_on_hand"}
+            "/api/loans/applications/1/disburse", headers=oh, json={"method": "cash_on_hand", "method_reference": "CASH-ACK-0001"}
         ).status_code
         == 403
     )
@@ -77,7 +77,7 @@ def test_non_admin_cannot_change_system_parameters(client, make_user, auth_heade
     assert client.get("/api/admin/parameters", headers=oh).status_code == 403
     assert (
         client.put(
-            "/api/admin/parameters", headers=oh, json={"max_loan_amount": 1}
+            "/api/admin/parameters", headers=oh, json={"min_monthly_income": 1}
         ).status_code
         == 403
     )
@@ -88,12 +88,12 @@ def test_admin_can_change_system_parameters(client, make_user, auth_header):
     r = client.put(
         "/api/admin/parameters",
         headers=ah,
-        json={"default_annual_interest_rate": 0.2},
+        json={"max_debt_to_income_ratio": 0.35},
     )
     assert r.status_code == 200
     params = r.get_json()["parameters"]
-    assert params["default_annual_interest_rate"]["value"] == 0.2
-    assert params["default_annual_interest_rate"]["source"] == "override"
+    assert params["max_debt_to_income_ratio"]["value"] == 0.35
+    assert params["max_debt_to_income_ratio"]["source"] == "override"
 
 
 @pytest.mark.parametrize(
@@ -123,13 +123,11 @@ def test_customer_cannot_verify_payments(client, make_user, auth_header):
 
 def test_customer_cannot_close_or_write_off_a_loan(client, make_user, auth_header):
     ch = auth_header(make_user("customer"))
-    assert client.post("/api/loans/1/close", headers=ch).status_code == 403
     assert client.post("/api/loans/1/write-off", headers=ch, json={}).status_code == 403
 
 
 def test_loan_officer_cannot_write_off_a_loan(client, make_user, auth_header):
-    """write-off is admin-only; close is loan_officer-or-admin (see
-    loan_processing.close_loan()/write_off_loan()'s role docstrings)."""
+    """write-off is admin-only (a fully paid loan closes itself)."""
     oh = auth_header(make_user("loan_officer"))
     assert client.post("/api/loans/1/write-off", headers=oh, json={}).status_code == 403
 
@@ -205,7 +203,7 @@ def test_customer_cannot_list_another_customers_loan_payments(
         f"/api/loans/applications/{app_id}/decision", headers=ah, json={"decision": "approve"}
     )
     r = client.post(
-        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand"}
+        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand", "method_reference": "CASH-ACK-0001"}
     )
     loan_id = r.get_json()["loan"]["id"]
 

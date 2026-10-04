@@ -111,7 +111,7 @@ def test_full_lifecycle_single_row_no_premature_loan(
     r = client.post(
         f"/api/loans/applications/{app_id}/disburse",
         headers=ah,
-        json={"method": "cash_on_hand"},
+        json={"method": "cash_on_hand", "method_reference": "CASH-ACK-0001"},
     )
     assert r.status_code == 200, r.get_json()
     assert r.get_json()["application"]["id"] == app_id
@@ -180,6 +180,6 @@ def test_admin_rejection_from_admin_review_creates_no_loan(
 
     # disburse must be refused on a rejected application
     r = client.post(
-        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand"}
+        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand", "method_reference": "CASH-ACK-0001"}
     )
     assert r.status_code == 409

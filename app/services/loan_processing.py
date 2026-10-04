@@ -16,7 +16,7 @@ docstring on the old->new status mapping):
     ADMIN_REVIEW --admin--> APPROVED --(same call)--> AWAITING_DISBURSEMENT
     ADMIN_REVIEW --admin--> REJECTED
     any open status --admin, early exit--> REJECTED
-    AWAITING_DISBURSEMENT --admin, disburse_application()--> (Loan created, ACTIVE)
+    AWAITING_DISBURSEMENT --admin, disburse_application()--> DISBURSED (Loan created, ACTIVE)
 
 A loan officer can never reject, decide, disburse, close or write off: those
 are admin-only, enforced at the API layer (roles_required) AND re-checked
@@ -118,6 +118,7 @@ _STATUS_LABELS: dict[LoanApplicationStatus, str] = {
     LoanApplicationStatus.APPROVED: "Approved",
     LoanApplicationStatus.REJECTED: "Not Approved",
     LoanApplicationStatus.AWAITING_DISBURSEMENT: "Approved - Processing Disbursement",
+    LoanApplicationStatus.DISBURSED: "Disbursed",
 }
 
 
@@ -1253,6 +1254,11 @@ def reject_application(application: LoanApplication, admin, note: str | None = N
     recommends rejection instead; see submit_recommendation().)
     """
     _require_admin(admin, "reject an application")
+    note = (note or "").strip() or None
+    if not note:
+        raise LoanProcessingError("A reason is required to reject an application.")
+    if len(note) > 2000:
+        raise LoanProcessingError("The reason must be at most 2000 characters.")
     if application.status not in _REJECTABLE_STATUSES:
         raise LoanProcessingError(
             f"Application #{application.id} is already {application.status.value}.",
@@ -1307,6 +1313,8 @@ def decide_application(
         and (rec.recommendation == OfficerRecommendationType.RECOMMEND_APPROVAL) != approve
     )
     note = (note or "").strip() or None
+    if not approve and not note:
+        raise LoanProcessingError("A reason is required to reject an application.")
     if overrides and not note:
         raise LoanProcessingError(
             "note is required when the decision goes against the officer's recommendation."
@@ -1368,10 +1376,17 @@ def disburse_application(
     method: str,
     method_reference: str | None = None,
     note: str | None = None,
+    disbursed_at: str | None = None,
+    evidence_document_id: int | None = None,
 ) -> tuple[LoanApplication, Loan]:
-    """admin only. Creates the Loan, its single bullet repayment installment,
-    and the Disbursement record - the concrete event that makes APPROVED /
-    AWAITING_DISBURSEMENT / ACTIVE genuinely separable in the data.
+    """admin only, AWAITING_DISBURSEMENT only. In ONE transaction: the Loan
+    (ACTIVE), its repayment installment, the Disbursement record, the
+    LoanTermsSnapshot, the ORIGINAL_OBLIGATION ledger entry, and the
+    application -> DISBURSED. Any failure rolls all of it back.
+
+    `method_reference` is required: the BSP transaction number, or the
+    cash acknowledgement number. `disbursed_at` (ISO timestamp, default now)
+    is when the money moved - never in the future.
     """
     from . import repayments_scheduler  # local import: avoid a circular import
 
@@ -1388,8 +1403,21 @@ def disburse_application(
         allowed = ", ".join(m.value for m in DisbursementMethod)
         raise LoanProcessingError(f"method must be one of: {allowed}.")
 
+    reference = (method_reference or "").strip()
+    if not reference:
+        raise LoanProcessingError(
+            "method_reference is required: the BSP transaction number, or the cash "
+            "acknowledgement number."
+        )
+    if len(reference) > 255:
+        raise LoanProcessingError("method_reference must be at most 255 characters.")
+    note = (note or "").strip() or None
+    if note and len(note) > 500:
+        raise LoanProcessingError("note must be at most 500 characters.")
+    evidence = _disbursement_evidence(application, evidence_document_id)
+
     terms = _locked_terms(application)
-    now = datetime.now(timezone.utc)
+    now = _parse_disbursed_at(disbursed_at, application)
     disbursed_on = prime_pricing.local_date(now)
     due_date = disbursed_on + timedelta(days=terms["term_days"])
 
@@ -1415,10 +1443,16 @@ def disburse_application(
             loan_id=loan.id,
             method=disb_method,
             amount=terms["principal"],
-            method_reference=(method_reference or "").strip() or None,
+            method_reference=reference,
             disbursed_at=now,
             recorded_by=admin.id,
             note=note,
+            destination_masked=(
+                _mask(application.disbursement_account_reference)
+                if disb_method == DisbursementMethod.BSP_MOBILE_BANKING
+                else None
+            ),
+            evidence_document_id=evidence.id if evidence else None,
         )
         db.session.add(disbursement)
         db.session.flush()
@@ -1450,31 +1484,90 @@ def disburse_application(
             disbursement_id=disbursement.id,
         ))
         db.session.flush()
+        application.status = LoanApplicationStatus.DISBURSED
+        audit.record(
+            "loan_disbursed",
+            actor_id=admin.id,
+            entity_type="Loan",
+            entity_id=loan.id,
+            details={
+                "application_id": application.id,
+                "disbursement_id": disbursement.id,
+                "principal": float(loan.principal_amount),
+                "total_repayable": float(loan.total_repayable),
+                "method": disb_method.value,
+                "method_reference": reference,
+                "evidence_document_id": disbursement.evidence_document_id,
+                "disbursed_at": now.isoformat(),
+                "due_date": schedule[0].due_date.isoformat(),
+                "from": LoanApplicationStatus.AWAITING_DISBURSEMENT.value,
+                "to": LoanApplicationStatus.DISBURSED.value,
+            },
+            commit=False,
+        )
+        db.session.commit()
     except IntegrityError:
         db.session.rollback()
-        raise LoanProcessingError(
-            f"Application #{application.id} has already been disbursed.", status_code=409
-        )
-
-    audit.record(
-        "loan_disbursed",
-        actor_id=admin.id,
-        entity_type="Loan",
-        entity_id=loan.id,
-        details={
-            "application_id": application.id,
-            "principal": float(loan.principal_amount),
-            "total_repayable": float(loan.total_repayable),
-            "method": disb_method.value,
-            "method_reference": disbursement.method_reference,
-            "due_date": schedule[0].due_date.isoformat(),
-        },
-        commit=False,
-    )
-    db.session.commit()
+        # A concurrent request got there first (the unique constraints on
+        # loans/disbursements.application_id). Anything else is a real bug.
+        if Disbursement.query.filter_by(application_id=application.id).first() is not None:
+            raise LoanProcessingError(
+                f"Application #{application.id} has already been disbursed.", status_code=409
+            )
+        raise
+    except Exception:
+        db.session.rollback()  # all-or-nothing: no loan, record, snapshot or entry survives
+        raise
 
     notifications.notify_loan_approved(loan)
     return application, loan
+
+
+def _mask(value: str | None) -> str | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    return "•••• " + value[-4:]
+
+
+def _parse_disbursed_at(raw, application) -> datetime:
+    now = datetime.now(timezone.utc)
+    if raw in (None, ""):
+        return now
+    try:
+        moment = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        raise LoanProcessingError("disbursed_at must be an ISO 8601 timestamp.")
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=prime_pricing.LOCAL_TZ)  # a local wall-clock time
+    if moment > now + timedelta(minutes=5):
+        raise LoanProcessingError("disbursed_at can't be in the future.")
+    decided = application.decided_at
+    if decided is not None:
+        if decided.tzinfo is None:
+            decided = decided.replace(tzinfo=timezone.utc)
+        if moment < decided:
+            raise LoanProcessingError("disbursed_at can't be before the application was approved.")
+    return moment
+
+
+def _disbursement_evidence(application, document_id):
+    if document_id in (None, ""):
+        return None
+    from app.models import Document
+    from app.models.enums import DocumentType
+
+    try:
+        doc = db.session.get(Document, int(document_id))
+    except (TypeError, ValueError):
+        doc = None
+    if doc is None or doc.user_id != application.user_id or doc.document_type != DocumentType.DISBURSEMENT_EVIDENCE:
+        raise LoanProcessingError(
+            "evidence_document_id must be disbursement evidence uploaded for this application's customer."
+        )
+    if Disbursement.query.filter_by(evidence_document_id=doc.id).first() is not None:
+        raise LoanProcessingError("That evidence document is already attached to another disbursement.")
+    return doc
 
 
 def _locked_terms(application: LoanApplication) -> dict:
@@ -1500,50 +1593,69 @@ def _locked_terms(application: LoanApplication) -> dict:
 
 
 # ---------------------------------------------------------------- 5. closure
-def close_loan(loan: Loan, admin) -> Loan:
-    """admin only. Explicit archival step: PAID -> CLOSED.
-    Nothing auto-advances a loan from PAID to CLOSED - see the migration plan.
-    """
-    _require_admin(admin, "close a loan")
-    if loan.status != LoanStatus.PAID:
-        raise LoanProcessingError(
-            f"Loan #{loan.id} is {loan.status.value}, expected paid.", status_code=409
-        )
-    loan.status = LoanStatus.CLOSED
-    loan.closure_reason = LoanClosureReason.PAID_IN_FULL
-    audit.record(
-        "loan_closed",
-        actor_id=admin.id,
-        entity_type="Loan",
-        entity_id=loan.id,
-        details={"closure_reason": loan.closure_reason.value},
-        commit=False,
-    )
-    db.session.commit()
-    return loan
-
-
 def write_off_loan(loan: Loan, admin, note: str | None = None) -> Loan:
-    """admin only. Marks a loan CLOSED/DEFAULTED directly from ACTIVE/OVERDUE
-    - without this, LoanClosureReason.DEFAULTED (and the credit-scoring
-    signal it feeds) would be unreachable dead code.
+    """admin only. Closes an ACTIVE/OVERDUE loan as DEFAULTED, with a
+    reason, writing its LoanClosure record (outstanding at write-off kept).
+    A loan paid in full closes itself - see payment_processing.verify_payment.
     """
+    from . import closures
+
     _require_admin(admin, "write off a loan")
+    note = (note or "").strip()
+    if not note:
+        raise LoanProcessingError("A reason is required to write off a loan.")
     if loan.status not in (LoanStatus.ACTIVE, LoanStatus.OVERDUE):
         raise LoanProcessingError(
             f"Loan #{loan.id} is {loan.status.value}; only active/overdue loans "
             "can be written off.",
             status_code=409,
         )
-    loan.status = LoanStatus.CLOSED
-    loan.closure_reason = LoanClosureReason.DEFAULTED
+    from . import ledger
+
+    if ledger.balance(loan.id) <= 0:
+        raise LoanProcessingError(f"Loan #{loan.id} has nothing outstanding to write off.", status_code=409)
+    closures.record_closure(loan, LoanClosureReason.DEFAULTED, actor_id=admin.id)
     audit.record(
-        "loan_written_off",
+        "loan_write_off_reason",
         actor_id=admin.id,
         entity_type="Loan",
         entity_id=loan.id,
-        details={"closure_reason": loan.closure_reason.value, "note": note},
+        details={"note": note},
         commit=False,
     )
     db.session.commit()
     return loan
+
+
+# ------------------------------------------------- admin decision (one call)
+AWAITING_FINAL_DECISION = (
+    LoanApplicationStatus.RECOMMENDED_FOR_APPROVAL,
+    LoanApplicationStatus.RECOMMENDED_FOR_REJECTION,
+    LoanApplicationStatus.ADMIN_REVIEW,
+)
+
+
+def admin_decide(application: LoanApplication, admin, *, approve: bool, reason: str | None = None):
+    """The Administrator's final decision from any "awaiting final decision"
+    status. A RECOMMENDED_* application is taken into ADMIN_REVIEW first, in
+    the same transaction (and audited), then decided. Approve only moves it
+    to AWAITING_DISBURSEMENT - no loan, no disbursement."""
+    _require_admin(admin, "make the final decision")
+    _require_status(application, *AWAITING_FINAL_DECISION)
+    if application.status != LoanApplicationStatus.ADMIN_REVIEW:
+        from_status = application.status
+        application.status = LoanApplicationStatus.ADMIN_REVIEW
+        audit.record(
+            "loan_application_admin_review_started",
+            actor_id=admin.id,
+            entity_type="LoanApplication",
+            entity_id=application.id,
+            details={"from": from_status.value, "to": LoanApplicationStatus.ADMIN_REVIEW.value,
+                     "implicit": True},
+            commit=False,
+        )
+    try:
+        return decide_application(application, admin, approve=approve, note=reason)
+    except Exception:
+        db.session.rollback()
+        raise

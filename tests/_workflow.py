@@ -121,7 +121,7 @@ def to_disbursed_loan(client, ch, oh, ah, apply_body):
     )
     assert r.status_code == 200, r.get_json()
     r = client.post(
-        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand"}
+        f"/api/loans/applications/{app_id}/disburse", headers=ah, json={"method": "cash_on_hand", "method_reference": "CASH-ACK-0001"}
     )
     assert r.status_code == 200, r.get_json()
     return app_id, r.get_json()["loan"]
