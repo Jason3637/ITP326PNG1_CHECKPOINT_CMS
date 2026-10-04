@@ -63,6 +63,16 @@ from . import parameters, prime_pricing
 
 ALGORITHM = "interim-v2"
 
+# Staff-facing (shown under the assessment on the Application Review
+# screen). Served at read time by officer_views.credit_assessment(), so a
+# wording change reaches results already stored on applications too.
+# Drop the last sentence once the client confirms its lending policy.
+DISCLAIMER = (
+    "Advisory assessment only. It does not replace the judgment of the Loan "
+    "Officer or Administrator. The assessment criteria are provisional until "
+    "Prime's Vault's lending policy is finalised."
+)
+
 _CENTS = Decimal("0.01")
 
 
@@ -325,13 +335,7 @@ def evaluate(
 
     return {
         "algorithm": ALGORITHM,
-        "disclaimer": (
-            "Interim underwriting model - a materially more complete rule set "
-            "than the original placeholder (income, employment, DTI, tenure, "
-            "repayment history), but the thresholds are still engineering "
-            "guesses. Replace with Prime's Vault's confirmed lending criteria "
-            "once provided."
-        ),
+        "disclaimer": DISCLAIMER,
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
         "score": score,
         "eligible": eligible,
