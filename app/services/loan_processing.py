@@ -387,6 +387,31 @@ def submit_application(
         raise LoanProcessingError(
             f"You already have an open application (#{existing.id}).", status_code=409
         )
+    # PRIME is one loan at a time: no new application while one is approved
+    # and waiting to be paid out, or while a loan is still being repaid.
+    approved = (
+        LoanApplication.query.filter_by(user_id=user.id)
+        .filter(LoanApplication.status.in_(
+            (LoanApplicationStatus.APPROVED, LoanApplicationStatus.AWAITING_DISBURSEMENT)))
+        .first()
+    )
+    if approved is not None:
+        raise LoanProcessingError(
+            f"Your application #{approved.id} is approved and waiting to be paid out. "
+            "You can apply again once that loan is fully repaid.",
+            status_code=409,
+        )
+    current = (
+        Loan.query.filter_by(user_id=user.id)
+        .filter(Loan.status.in_((LoanStatus.ACTIVE, LoanStatus.OVERDUE)))
+        .first()
+    )
+    if current is not None:
+        raise LoanProcessingError(
+            f"You still have a loan (#{current.id}) to repay. "
+            "You can apply again once it's fully repaid.",
+            status_code=409,
+        )
 
     application = LoanApplication(
         user_id=user.id,

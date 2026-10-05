@@ -149,7 +149,9 @@ def test_second_disbursement_via_the_api_is_409(client, disbursed, people):
     assert r.status_code == 409
 
 
-def test_second_disbursement_row_is_rejected_by_the_database(client, disbursed, people, apply_payload):
+def test_second_disbursement_row_is_rejected_by_the_database(
+    client, disbursed, people, apply_payload, make_user, auth_header
+):
     """Bypass every application check and insert directly: the unique
     constraints still refuse a second loan and a second disbursement for
     the same application."""
@@ -165,8 +167,10 @@ def test_second_disbursement_row_is_rejected_by_the_database(client, disbursed, 
 
     # A second, unrelated loan exists; point a disbursement at it but claim
     # the first application - disbursements.application_id is unique too.
+    # (another customer's - PRIME allows one loan per customer at a time)
     _, other = _workflow.to_disbursed_loan(
-        client, people["ch"], people["oh"], people["ah"], apply_payload(amount_requested=300))
+        client, auth_header(make_user("customer")), people["oh"], people["ah"],
+        apply_payload(amount_requested=300))
     db.session.add(Disbursement(application_id=app_id, loan_id=other["id"],
                                 method=DisbursementMethod.CASH_ON_HAND, amount=300, recorded_by=admin_id))
     with pytest.raises(IntegrityError):
