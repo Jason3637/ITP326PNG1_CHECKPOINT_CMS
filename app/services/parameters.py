@@ -103,6 +103,13 @@ def get_effective() -> dict:
 
 
 def update(changes: dict, actor_id: int | None) -> dict:
+    from app.models import User
+    from app.models.enums import UserRole
+
+    # Admin only - re-checked from the database role, not just the route.
+    actor = db.session.get(User, actor_id) if actor_id is not None else None
+    if actor is None or actor.role != UserRole.ADMIN:
+        raise ServiceError("Only an administrator can change system parameters.", 403)
     if not isinstance(changes, dict) or not changes:
         raise ServiceError("Provide at least one parameter to update.")
     unknown = set(changes) - set(_SPEC)
