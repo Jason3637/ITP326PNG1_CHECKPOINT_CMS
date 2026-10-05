@@ -205,6 +205,14 @@ def run(as_of: date | None = None) -> dict:
     the ACTIVE/OVERDUE status. One ScheduledJobRun row per run (every penalty
     entry points at it); one commit at the end."""
     as_of = as_of or ledger.today_local()
+    try:
+        return _run(as_of)
+    except Exception:
+        db.session.rollback()  # all or nothing: no penalty, status change or run row survives
+        raise
+
+
+def _run(as_of: date) -> dict:
     job_run = ScheduledJobRun(job_name=JOB_NAME)
     db.session.add(job_run)
     db.session.flush()

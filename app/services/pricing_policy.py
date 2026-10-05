@@ -78,6 +78,15 @@ def lock_quote(application, pricing: dict) -> None:
 
 
 # ------------------------------------------------------- admin: new versions
+def _require_admin(actor) -> None:
+    """Re-checked here, from the database role, not only at the route: a
+    token's role claim can be up to an hour stale after a role change."""
+    from app.models.enums import UserRole
+
+    if actor is None or actor.role != UserRole.ADMIN:
+        raise ServiceError("Only an administrator can change pricing or penalty policy.", 403)
+
+
 def _money(v) -> float:
     return float(Decimal(v))
 
@@ -191,6 +200,7 @@ def create_pricing_version(admin, tiers, note=None) -> PrimePricingVersion:
     terms snapshot - nothing already quoted or disbursed is repriced."""
     from . import audit
 
+    _require_admin(admin)
     parsed = _parse_pricing_tiers(tiers)
     note = _clean_note(note)
     previous = current_pricing_version()
@@ -225,6 +235,7 @@ def create_penalty_version(admin, tiers, note=None) -> PenaltyPolicyVersion:
     on. Loans already disbursed keep the version recorded in their snapshot."""
     from . import audit
 
+    _require_admin(admin)
     parsed = _parse_penalty_tiers(tiers)
     note = _clean_note(note)
     previous = current_penalty_policy()
