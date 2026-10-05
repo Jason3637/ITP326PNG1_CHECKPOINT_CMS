@@ -99,12 +99,15 @@ def test_officer_cannot_record_a_disbursement(client, people, workflow, apply_pa
 
 # ------------------------------------------------------ loans and repayments
 @pytest.fixture
-def disbursed(client, people, workflow, apply_payload):
-    _, loan = workflow.to_disbursed_loan(people["ch"], people["oh"], people["ah"], apply_payload())
+def disbursed(client, people, workflow, apply_payload, make_user, auth_header):
+    # Its own customer: PRIME allows one loan per customer at a time, and
+    # other fixtures here apply as people["customer"].
+    ch = auth_header(make_user("customer"))
+    _, loan = workflow.to_disbursed_loan(ch, people["oh"], people["ah"], apply_payload())
     row = RepaymentSchedule.query.filter_by(loan_id=loan["id"]).one()
     r = client.post(
         "/api/payments/repay",
-        headers=people["ch"],
+        headers=ch,
         json={"repayment_schedule_id": row.id, "amount": loan["total_repayable"], "payment_method": "cash"},
     )
     return loan, r.get_json()["transaction"]["id"]
