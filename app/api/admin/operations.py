@@ -140,7 +140,9 @@ disburse_in = ns.model("AdminDisbursementInput", {
     "disbursed_at": fields.String(required=False, example="2026-10-05T09:30:00+10:00",
                                   description="When the money moved; default now; not in the future."),
     "evidence_document_id": fields.Integer(required=False,
-                                           description="From POST .../disbursement-evidence."),
+                                           description="From POST .../disbursement-evidence. Required for "
+                                                       "bsp_mobile_banking (the BSP receipt); optional for "
+                                                       "cash_on_hand."),
     "note": fields.String(required=False, description="Max 500."),
 })
 pricing_tier_in = ns.model("PricingTierInput", {

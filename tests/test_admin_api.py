@@ -169,7 +169,16 @@ def test_disbursement_creates_everything_and_only_once(client, people, apply_pay
                        disbursement_account_reference="+675 7123 4567")
     assert _disburse(client, people, app_id, reference="").status_code == 400
 
+    # A BSP payout needs its receipt.
     r = _disburse(client, people, app_id, method="bsp_mobile_banking", reference="BSP-TXN-1")
+    assert r.status_code == 400 and r.get_json()["message"] == "evidence_document_id is required for BSP Mobile Banking disbursements: upload the BSP receipt first."
+    with patch("app.services.documents.supabase_storage.upload_file", return_value="ok"):
+        receipt = client.post(f"/api/admin/applications/{app_id}/disbursement-evidence", headers=people["ah"],
+                              data={"file": (BytesIO(b"%PDF-1.4 bsp"), "bsp.pdf", "application/pdf")},
+                              content_type="multipart/form-data").get_json()["id"]
+
+    r = _disburse(client, people, app_id, method="bsp_mobile_banking", reference="BSP-TXN-1",
+                  evidence_document_id=receipt)
     assert r.status_code == 201, r.get_json()
     loan = r.get_json()
     assert db.session.get(LoanApplication, app_id).status.value == "disbursed"

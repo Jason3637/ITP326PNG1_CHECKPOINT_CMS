@@ -1385,7 +1385,8 @@ def disburse_application(
     application -> DISBURSED. Any failure rolls all of it back.
 
     `method_reference` is required: the BSP transaction number, or the
-    cash acknowledgement number. `disbursed_at` (ISO timestamp, default now)
+    cash acknowledgement number. A BSP Mobile Banking disbursement also
+    requires `evidence_document_id` (the BSP receipt); for cash it's optional. `disbursed_at` (ISO timestamp, default now)
     is when the money moved - never in the future.
     """
     from . import repayments_scheduler  # local import: avoid a circular import
@@ -1415,6 +1416,12 @@ def disburse_application(
     if note and len(note) > 500:
         raise LoanProcessingError("note must be at most 500 characters.")
     evidence = _disbursement_evidence(application, evidence_document_id)
+    # Every BSP Mobile Banking payout must carry its BSP receipt; cash
+    # acknowledgements stay optional.
+    if disb_method == DisbursementMethod.BSP_MOBILE_BANKING and evidence is None:
+        raise LoanProcessingError(
+            "evidence_document_id is required for BSP Mobile Banking disbursements: upload the BSP receipt first."
+        )
 
     terms = _locked_terms(application)
     now = _parse_disbursed_at(disbursed_at, application)
