@@ -1,4 +1,4 @@
-"""SQLAlchemy models for Prime's Vault (Layer 4 data entities, lending-only).
+"""SQLAlchemy models for PRIMESTONE (Layer 4 data entities, lending-only).
 
 Importing this package registers every model on ``db.metadata`` so
 Flask-Migrate autogenerate can see them. ``app.create_app`` imports it.

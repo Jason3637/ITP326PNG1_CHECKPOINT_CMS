@@ -61,7 +61,7 @@ production — `.env` is gitignored and only used for local dev.
 | `SMTP_HOST` | optional | default `smtp.zoho.com` |
 | `SMTP_PORT` | optional | default `587` |
 | `SMTP_USE_TLS` | optional | default `true` (STARTTLS on 587) |
-| `MAIL_FROM_NAME` | optional | default `Prime's Vault` |
+| `MAIL_FROM_NAME` | optional | default `PRIMESTONE` |
 
 Lending tunables (`DEFAULT_ANNUAL_INTEREST_RATE`, `MIN/MAX_LOAN_AMOUNT`,
 `MIN/MAX_LOAN_TERM_MONTHS`) are optional env seeds — an admin can also change them

@@ -80,7 +80,7 @@ def test_a_written_off_loan_blocks_applying_until_an_admin_clears_it(client, peo
     assert r.status_code == 409
     assert r.get_json()["message"] == (
         f"Your loan (#{loan_id}) was written off, so you can't apply for a new PRIME loan until "
-        "Prime's Vault has reviewed it. Contact Prime's Vault to ask for a review."
+        "PRIMESTONE has reviewed it. Contact PRIMESTONE to ask for a review."
     )
     (loan,) = client.get("/api/loans/mine", headers=people["ch"]).get_json()["loans"]
     assert loan["blocks_reapplication"] is True

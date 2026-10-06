@@ -1,5 +1,5 @@
 """PRIME pricing - the authoritative, single-source-of-truth calculation for
-Prime's Vault's fixed-tier micro-loan product.
+PRIMESTONE's fixed-tier micro-loan product.
 
 PRIME is a flat-fee, 14-day, single-repayment product covering K100-K1,000.
 The above-K1,000 tier is a distinct, larger-loan product that is NOT being

@@ -1,4 +1,4 @@
-# Prime's Vault - Backend (Phase A scaffold)
+# PRIMESTONE - Backend (Phase A scaffold)
 
 Flask backend using the application-factory pattern.
 
@@ -356,7 +356,7 @@ Full request/response models are in Swagger (`/api/docs`).
 
 ### Interest rate configuration — where it lives
 
-Prime's Vault is a small SME, not a bank with tiered rate products, so there is
+PRIMESTONE is a small SME, not a bank with tiered rate products, so there is
 **no rate table**. The default annual rate is a single environment variable:
 
 ```

@@ -15,7 +15,7 @@ def generate_totp_secret() -> str:
 
 def provisioning_uri(secret: str, account_name: str) -> str:
     """otpauth:// URI for an authenticator app."""
-    issuer = current_app.config.get("TOTP_ISSUER", "Prime's Vault")
+    issuer = current_app.config.get("TOTP_ISSUER", "PRIMESTONE")
     return pyotp.TOTP(secret).provisioning_uri(name=account_name, issuer_name=issuer)
 
 

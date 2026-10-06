@@ -1,4 +1,4 @@
-"""Application factory for Prime's Vault backend.
+"""Application factory for PRIMESTONE backend.
 
 Usage::
 
