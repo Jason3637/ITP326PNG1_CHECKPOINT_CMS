@@ -102,7 +102,7 @@ _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 staff_create_in = ns.model(
     "StaffAccountInput",
     {
-        "email": fields.String(required=True, example="jane.officer@primesvault.pg"),
+        "email": fields.String(required=True, example="jane.officer@primestone.example"),
         "full_name": fields.String(required=True, example="Jane Officer"),
         "role": fields.String(
             required=True,

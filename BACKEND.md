@@ -681,7 +681,7 @@ origins come from `CORS_ORIGINS` (comma-separated); dev default is
 `http://localhost:3000,http://127.0.0.1:3000` (Next.js dev server). Allowed
 headers: `Authorization`, `Content-Type`. Methods: `GET, POST, PUT, PATCH,
 DELETE, OPTIONS`. **On deploy, set `CORS_ORIGINS` to the deployed frontend URL(s)**
-— e.g. `CORS_ORIGINS=https://app.primesvault.example`. Because auth is a Bearer
+— e.g. `CORS_ORIGINS=https://app.primestone.example`. Because auth is a Bearer
 JWT header (not cookies), credentialed CORS is not needed.
 
 ---

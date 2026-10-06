@@ -22,13 +22,13 @@ through the normal public flow (POST /api/auth/mfa/setup then
 /mfa/verify-setup) - see STAFF_ONBOARDING.md for the exact steps to hand them.
 
 Usage (local):
-    python scripts/seed_staff.py --email jane@primesvault.pg \\
-        --full-name "Jane Officer" --role loan_officer --created-by "you@primesvault.pg"
+    python scripts/seed_staff.py --email jane@primestone.example \\
+        --full-name "Jane Officer" --role loan_officer --created-by "you@primestone.example"
 
 Usage (against Railway production, without deploying anything):
     railway run --service <service> python scripts/seed_staff.py \\
-        --email jane@primesvault.pg --full-name "Jane Officer" \\
-        --role loan_officer --created-by "you@primesvault.pg"
+        --email jane@primestone.example --full-name "Jane Officer" \\
+        --role loan_officer --created-by "you@primestone.example"
 
 Add --yes to skip the confirmation prompt (for scripted/non-interactive use).
 Omit --password to have one generated for you - it is printed ONCE and never

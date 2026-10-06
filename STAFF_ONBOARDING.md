@@ -70,10 +70,10 @@ project:
 ```bash
 railway run --service ITP326PNG1_CHECKPOINT_CMS \
   python scripts/seed_staff.py \
-  --email jane@primesvault.pg \
+  --email jane@primestone.example \
   --full-name "Jane Officer" \
   --role admin \
-  --created-by "your.name@primesvault.pg"
+  --created-by "your.name@primestone.example"
 ```
 
 The script shows the database it's about to write to and asks for

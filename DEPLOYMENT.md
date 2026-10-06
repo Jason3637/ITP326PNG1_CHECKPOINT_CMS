@@ -52,7 +52,7 @@ production — `.env` is gitignored and only used for local dev.
 | `SUPABASE_URL` | **yes** (for docs/storage) | `https://<ref>.supabase.co` |
 | `SUPABASE_SERVICE_KEY` | **yes** (for storage) | Supabase → Settings → API → `service_role` secret. Server-side only |
 | `SUPABASE_STORAGE_BUCKET` | **yes** (for storage) | e.g. `primes-vault-documents` (created automatically on first use) |
-| `CORS_ORIGINS` | **yes** | Comma-separated deployed frontend origin(s), e.g. `https://app.primesvault.example`. No trailing slash |
+| `CORS_ORIGINS` | **yes** | Comma-separated deployed frontend origin(s), e.g. `https://app.primestone.example`. No trailing slash |
 | `FLASK_ENV` | recommended | `production` |
 | `NOTIFICATIONS_ENABLED` | for email | `true` to actually send; default `false` (logs only) |
 | `SMTP_USERNAME` | if notifications on | Zoho mailbox address |
