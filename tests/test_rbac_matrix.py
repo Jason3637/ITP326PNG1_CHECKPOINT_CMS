@@ -90,6 +90,7 @@ MATRIX: dict[tuple[str, str], frozenset] = {
     ("GET", "/api/admin/loans"): ADMIN,
     ("GET", "/api/admin/loans/<int:loan_id>"): ADMIN,
     ("POST", "/api/admin/loans/<int:loan_id>/write-off"): ADMIN,
+    ("POST", "/api/admin/loans/<int:loan_id>/clear-reapplication-block"): ADMIN,
     ("GET", "/api/admin/repayments"): ADMIN,
     ("POST", "/api/admin/repayments/<int:payment_id>/verify"): ADMIN,
     ("POST", "/api/admin/repayments/<int:payment_id>/reject"): ADMIN,

@@ -52,7 +52,13 @@ from .document import Document
 from .information_request import InformationRequest, InformationResponse
 from .loan import Loan
 from .loan_application import LoanApplication
-from .loan_records import LoanClosure, LoanLedgerEntry, LoanTermsSnapshot, ScheduledJobRun
+from .loan_records import (
+    LoanClosure,
+    LoanLedgerEntry,
+    LoanTermsSnapshot,
+    ReapplicationClearance,
+    ScheduledJobRun,
+)
 from .pricing_policy import (
     PenaltyPolicyTier,
     PenaltyPolicyVersion,
@@ -89,6 +95,7 @@ __all__ = [
     "PenaltyPolicyVersion",
     "PrimePricingTier",
     "PrimePricingVersion",
+    "ReapplicationClearance",
     "Referee",
     "RepaymentSchedule",
     "ScheduledJobRun",

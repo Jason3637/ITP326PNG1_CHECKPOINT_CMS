@@ -13,7 +13,7 @@ from sqlalchemy import event, inspect
 
 from .disbursement import Disbursement
 from .loan_application import LoanApplication
-from .loan_records import LoanClosure, LoanLedgerEntry, LoanTermsSnapshot
+from .loan_records import LoanClosure, LoanLedgerEntry, LoanTermsSnapshot, ReapplicationClearance
 from .pricing_policy import (
     PenaltyPolicyTier,
     PenaltyPolicyVersion,
@@ -25,6 +25,7 @@ INSERT_ONLY = (
     LoanTermsSnapshot,
     LoanLedgerEntry,
     LoanClosure,
+    ReapplicationClearance,
     Disbursement,
     PrimePricingVersion,
     PrimePricingTier,

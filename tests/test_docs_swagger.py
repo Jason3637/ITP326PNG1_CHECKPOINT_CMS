@@ -66,6 +66,7 @@ EXPECTED_ENDPOINTS = {
     ("get", "/admin/loans"),
     ("get", "/admin/loans/{loan_id}"),
     ("post", "/admin/loans/{loan_id}/write-off"),
+    ("post", "/admin/loans/{loan_id}/clear-reapplication-block"),
     ("get", "/admin/repayments"),
     ("post", "/admin/repayments/{payment_id}/verify"),
     ("post", "/admin/repayments/{payment_id}/reject"),

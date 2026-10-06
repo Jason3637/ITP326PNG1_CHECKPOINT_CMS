@@ -92,6 +92,19 @@ class Loan(db.Model):
     closure = db.relationship(
         "LoanClosure", back_populates="loan", uselist=False, passive_deletes="all"
     )
+    reapplication_clearance = db.relationship(
+        "ReapplicationClearance", back_populates="loan", uselist=False, passive_deletes="all"
+    )
+
+    @property
+    def blocks_reapplication(self) -> bool:
+        """Written off and not yet cleared by an admin - the customer can't
+        apply for PRIME again until it is."""
+        return (
+            self.status == LoanStatus.CLOSED
+            and self.closure_reason == LoanClosureReason.DEFAULTED
+            and self.reapplication_clearance is None
+        )
 
     def __repr__(self) -> str:
         return f"<Loan {self.id} user={self.user_id} {self.status}>"
