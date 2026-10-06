@@ -1,4 +1,4 @@
-# Prime's Vault — UAT Test Script
+# PRIMESTONE — UAT Test Script
 
 Full customer journey (sign-up through repayment) and staff journey (review,
 decision, audit, parameters) for User Acceptance Testing against the live
@@ -33,7 +33,7 @@ Everything else is fair game to file as a defect.
 **Credit-check & loan eligibility — interim, not final.** The scoring behind
 every application (`algorithm: interim-v2`) is an engineering placeholder
 built from generic lending signals (income floor, debt-to-income, repayment
-history, membership tenure) — not Prime's Vault's actual, client-approved
+history, membership tenure) — not PRIMESTONE's actual, client-approved
 lending policy. Concretely: the loan application form doesn't collect income
 or employment yet, so **every application will read as needing manual
 review** regardless of how strong it looks. Expected — the system never

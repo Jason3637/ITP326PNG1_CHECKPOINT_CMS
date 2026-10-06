@@ -1,4 +1,4 @@
-# Prime's Vault backend - direct dependencies (Python 3.14)
+# PRIMESTONE backend - direct dependencies (Python 3.14)
 # Regenerate a full lock with: pip freeze > requirements.lock.txt
 
 Flask==3.1.3

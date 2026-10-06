@@ -8,7 +8,7 @@ user can be VERIFIED at a time (partial unique index below).
 
 ``valid_until`` = min(id_expiry_date, verified_at + the admin-tunable
 customer-verification validity period). The 12-month default for that
-period is an engineering default awaiting Prime's Vault confirmation.
+period is an engineering default awaiting PRIMESTONE confirmation.
 """
 
 from sqlalchemy import func

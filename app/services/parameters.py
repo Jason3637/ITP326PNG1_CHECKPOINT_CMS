@@ -36,7 +36,7 @@ _SPEC: dict[str, tuple[str, str, str]] = {
         "CUSTOMER_VERIFICATION_VALIDITY_MONTHS",
         "int",
         "Months a customer verification stays valid (capped at the ID's expiry). "
-        "12 is an engineering default awaiting Prime's Vault confirmation.",
+        "12 is an engineering default awaiting PRIMESTONE confirmation.",
     ),
 }
 

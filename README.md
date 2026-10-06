@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Jason3637/ITP326PNG1_CHECKPOINT_CMS/actions/workflows/ci.yml/badge.svg)](https://github.com/Jason3637/ITP326PNG1_CHECKPOINT_CMS/actions/workflows/ci.yml)
 
-This is the CMS repo for our capstone project where we will build a computer and phone app for our client Prime's Vault money lending business to automatically track member savings, make loan steps easier, handle payments, and let members check their own accounts anytime.
+This is the CMS repo for our capstone project where we will build a computer and phone app for our client PRIMESTONE money lending business to automatically track member savings, make loan steps easier, handle payments, and let members check their own accounts anytime.
 
 ## Documentation
 

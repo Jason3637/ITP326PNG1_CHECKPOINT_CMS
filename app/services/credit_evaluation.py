@@ -5,7 +5,7 @@
 placeholder, built from the criteria categories a real lender would use
 (minimum income, employment status, debt-to-income ratio, membership tenure,
 repayment history), but the exact thresholds below are still ENGINEERING
-GUESSES, not Prime's Vault's confirmed lending policy. Nobody at the client has
+GUESSES, not PRIMESTONE's confirmed lending policy. Nobody at the client has
 signed off on "PGK 200/month minimum income" or "40% max DTI" - those live in
 ``MIN_MONTHLY_INCOME`` / ``MAX_DEBT_TO_INCOME_RATIO`` (admin-tunable via
 ``PUT /api/admin/parameters``, see ``app/services/parameters.py``) specifically
@@ -70,7 +70,7 @@ ALGORITHM = "interim-v2"
 DISCLAIMER = (
     "Advisory assessment only. It does not replace the judgment of the Loan "
     "Officer or Administrator. The assessment criteria are provisional until "
-    "Prime's Vault's lending policy is finalised."
+    "PRIMESTONE's lending policy is finalised."
 )
 
 _CENTS = Decimal("0.01")

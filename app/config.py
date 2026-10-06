@@ -65,7 +65,7 @@ class Config:
     # at rest. Generate with:
     #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     MFA_ENCRYPTION_KEY = os.environ.get("MFA_ENCRYPTION_KEY", "")
-    TOTP_ISSUER = os.environ.get("TOTP_ISSUER", "Prime's Vault")
+    TOTP_ISSUER = os.environ.get("TOTP_ISSUER", "PRIMESTONE")
     # Short-lived tokens that gate the two-step MFA flow (not full access tokens).
     MFA_SETUP_TOKEN_EXPIRES = timedelta(minutes=15)
     MFA_CHALLENGE_TOKEN_EXPIRES = timedelta(minutes=5)
@@ -84,7 +84,7 @@ class Config:
     SWAGGER_UI_DOC_EXPANSION = "list"
 
     # --- Lending parameters -------------------------------------------------
-    # Prime's Vault is a small SME, not a bank with tiered rate products, so a
+    # PRIMESTONE is a small SME, not a bank with tiered rate products, so a
     # single configurable default rate lives in the environment (not a rate
     # table). A loan officer may still override the rate per-decision; whatever
     # rate is actually used is persisted on the Loan row.
@@ -103,7 +103,7 @@ class Config:
     MAX_DEBT_TO_INCOME_RATIO = _decimal("MAX_DEBT_TO_INCOME_RATIO", "0.40")  # 40%
     # Days before an installment's due date to send the "repayment due soon" email.
     REPAYMENT_REMINDER_LEAD_DAYS = int(os.environ.get("REPAYMENT_REMINDER_LEAD_DAYS", "3"))
-    # ISO currency code, for the frontend to format amounts (Prime's Vault is in PNG).
+    # ISO currency code, for the frontend to format amounts (PRIMESTONE is in PNG).
     CURRENCY_CODE = os.environ.get("CURRENCY_CODE", "PGK")
     # --- PRIME product ------------------------------------------------------
     # The terms/policy version a customer must acknowledge at submission
@@ -114,7 +114,7 @@ class Config:
 
     # --- Customer verification (Loan Officer workflow) ---
     # How long a customer-level verification stays valid (capped at the ID's
-    # expiry). 12 months is an ENGINEERING DEFAULT awaiting Prime's Vault
+    # expiry). 12 months is an ENGINEERING DEFAULT awaiting PRIMESTONE
     # confirmation - admin-tunable via PUT /api/admin/parameters
     # (customer_verification_validity_months).
     CUSTOMER_VERIFICATION_VALIDITY_MONTHS = int(
@@ -146,7 +146,7 @@ class Config:
     SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
     SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
     MAIL_FROM = os.environ.get("MAIL_FROM", os.environ.get("SMTP_USERNAME", ""))
-    MAIL_FROM_NAME = os.environ.get("MAIL_FROM_NAME", "Prime's Vault")
+    MAIL_FROM_NAME = os.environ.get("MAIL_FROM_NAME", "PRIMESTONE")
     MAIL_TIMEOUT_SECONDS = int(os.environ.get("MAIL_TIMEOUT_SECONDS", "10"))
 
 

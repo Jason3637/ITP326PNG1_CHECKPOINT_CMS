@@ -423,7 +423,7 @@ def submit_application(
     if blocked is not None:
         raise LoanProcessingError(
             f"Your loan (#{blocked.id}) was written off, so you can't apply for a new PRIME loan "
-            "until Prime's Vault has reviewed it. Contact Prime's Vault to ask for a review.",
+            "until PRIMESTONE has reviewed it. Contact PRIMESTONE to ask for a review.",
             status_code=409,
         )
 

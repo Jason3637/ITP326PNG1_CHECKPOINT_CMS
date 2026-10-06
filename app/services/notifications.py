@@ -38,7 +38,7 @@ def _config():
         "username": c.get("SMTP_USERNAME"),
         "password": c.get("SMTP_PASSWORD"),
         "from_addr": c.get("MAIL_FROM") or c.get("SMTP_USERNAME"),
-        "from_name": c.get("MAIL_FROM_NAME", "Prime's Vault"),
+        "from_name": c.get("MAIL_FROM_NAME", "PRIMESTONE"),
         "timeout": c.get("MAIL_TIMEOUT_SECONDS", 10),
     }
 
@@ -102,7 +102,7 @@ def notify_application_received(application) -> dict:
         f"{_term(application)} has been received and is now "
         f"{application.status.value.replace('_', ' ')}.\n\n"
         f"We'll email you again once a loan officer has reviewed it.\n\n"
-        f"- Prime's Vault",
+        f"- PRIMESTONE",
     )
 
 
@@ -128,7 +128,7 @@ def notify_customer_action_required(application, requests) -> dict:
         "we need the following from you:\n\n"
         + "\n".join(lines)
         + "\n\nPlease sign in to your account to respond. Your application stays "
-        "on hold until you do.\n\n- Prime's Vault",
+        "on hold until you do.\n\n- PRIMESTONE",
     )
 
 
@@ -146,7 +146,7 @@ def notify_loan_approved(loan) -> dict:
         f"  Term:               {_term(loan)}\n"
         f"  First payment due:  {first.isoformat() if first else 'see your schedule'}\n\n"
         f"You can view your full repayment schedule in your account.\n\n"
-        f"- Prime's Vault",
+        f"- PRIMESTONE",
     )
 
 
@@ -159,7 +159,7 @@ def notify_loan_rejected(application) -> dict:
         f"After review, we're unable to approve your application for "
         f"{_money(application.amount_requested)} at this time.\n\n"
         f"You're welcome to contact us or apply again in the future.\n\n"
-        f"- Prime's Vault",
+        f"- PRIMESTONE",
     )
 
 
@@ -180,7 +180,7 @@ def notify_payment_received(transaction, schedule) -> dict:
         f"#{schedule.installment_number}.\n\n"
         f"  Installment status: {schedule.status.value}\n"
         f"  Balance remaining:  {_money(max(Decimal('0'), remaining))}\n\n"
-        f"Thank you.\n\n- Prime's Vault",
+        f"Thank you.\n\n- PRIMESTONE",
     )
 
 
@@ -195,5 +195,5 @@ def notify_repayment_due_soon(schedule) -> dict:
         f"This is a reminder that installment #{schedule.installment_number} of "
         f"{_money(schedule.amount_due)} is due on {schedule.due_date.isoformat()} "
         f"({days} day(s) from now).\n\n"
-        f"- Prime's Vault",
+        f"- PRIMESTONE",
     )

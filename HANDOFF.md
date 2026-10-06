@@ -1,4 +1,4 @@
-# Prime's Vault Backend — Phase B Handoff
+# PRIMESTONE Backend — Phase B Handoff
 
 Status as of 2026-09-08. Branch `Develop` @ `8f3b8ee`, pushed to GitHub.
 
@@ -38,7 +38,7 @@ response models (35 schema definitions). `BACKEND.md` (reference),
 
 | Thing | Current state | Why it matters |
 |---|---|---|
-| **Credit evaluation** | `credit_evaluation.py` — a transparent placeholder heuristic (amount vs. cap, term length, prior-loan history, account standing → score 0–100). Flagged in code and in every stored result (`"algorithm": "placeholder-v1"`). | Must be replaced with Prime's Vault's real lending criteria (income verification, affordability ratios, guarantor rules). It never auto-decides — an officer recommends and an admin approves/rejects. |
+| **Credit evaluation** | `credit_evaluation.py` — a transparent placeholder heuristic (amount vs. cap, term length, prior-loan history, account standing → score 0–100). Flagged in code and in every stored result (`"algorithm": "placeholder-v1"`). | Must be replaced with PRIMESTONE's real lending criteria (income verification, affordability ratios, guarantor rules). It never auto-decides — an officer recommends and an admin approves/rejects. |
 | **Disbursement** | Approval == disbursement (`disbursed_at = now` on approve). No separate "funds released" step or bank integration. | If disbursement is a distinct real-world event, add a `disburse` transition. |
 | **Payments** | Marked `completed` immediately. No payment gateway — built for manual/cash entry by staff or self-report by customers. | When a gateway (card, mobile money) is added: create the transaction as `pending`, settle on callback. |
 | **Overdue status** | Installments are only flipped to `overdue` by reporting logic on read (`due_date < today AND not paid`); the stored `overdue` enum value is never written by a job yet. | Wire a daily job to persist overdue status + trigger dunning, alongside `send_due_reminders.py`. |

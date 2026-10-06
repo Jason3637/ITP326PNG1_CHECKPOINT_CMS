@@ -31,7 +31,7 @@ authorizations = {
 api = Api(
     api_bp,
     version="0.1.0",
-    title="Prime's Vault API",
+    title="PRIMESTONE API",
     description="Digital cooperative lending platform - backend API.",
     doc="/docs",
     authorizations=authorizations,

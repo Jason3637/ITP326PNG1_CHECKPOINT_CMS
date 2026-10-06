@@ -93,7 +93,7 @@ Send them these steps. Everything happens in the web app.
    can't scan it, open **Can't scan the code?** and type the key shown into
    your app instead.
 3. **Confirm it works.** Enter the 6-digit code your authenticator app now
-   shows for Prime's Vault, and choose **Verify and enable MFA**.
+   shows for PRIMESTONE, and choose **Verify and enable MFA**.
 4. **Save your backup codes.** The app shows ten one-time backup codes, once
    only. Store them somewhere safe and private (a password manager is
    ideal). Each one lets you sign in once if you lose your phone. Then
