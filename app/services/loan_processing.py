@@ -412,6 +412,20 @@ def submit_application(
             "You can apply again once it's fully repaid.",
             status_code=409,
         )
+    # A written-off loan blocks new applications until an admin clears it
+    # (clear_reapplication_block) - nothing lifts it automatically.
+    blocked = next(
+        (l for l in Loan.query.filter_by(user_id=user.id, status=LoanStatus.CLOSED,
+                                         closure_reason=LoanClosureReason.DEFAULTED).order_by(Loan.id)
+         if l.blocks_reapplication),
+        None,
+    )
+    if blocked is not None:
+        raise LoanProcessingError(
+            f"Your loan (#{blocked.id}) was written off, so you can't apply for a new PRIME loan "
+            "until Prime's Vault has reviewed it. Contact Prime's Vault to ask for a review.",
+            status_code=409,
+        )
 
     application = LoanApplication(
         user_id=user.id,
@@ -1657,6 +1671,44 @@ def write_off_loan(loan: Loan, admin, note: str | None = None) -> Loan:
     )
     db.session.commit()
     return loan
+
+
+def clear_reapplication_block(loan: Loan, admin, reason: str | None):
+    """admin only. Records that the customer whose loan this was may apply
+    for PRIME again, despite the write-off. Reason required; audited; the
+    clearance row is insert-only and can only be made once per loan."""
+    from app.models import ReapplicationClearance
+
+    _require_admin(admin, "clear a written-off customer to apply again")
+    reason = (reason or "").strip()
+    if not reason:
+        raise LoanProcessingError("A reason is required to clear a customer to apply again.")
+    if len(reason) > 1000:
+        raise LoanProcessingError("The reason must be at most 1000 characters.")
+    if not (loan.status == LoanStatus.CLOSED and loan.closure_reason == LoanClosureReason.DEFAULTED):
+        raise LoanProcessingError(
+            f"Loan #{loan.id} wasn't written off, so it doesn't block the customer from applying.",
+            status_code=409,
+        )
+    if loan.reapplication_clearance is not None:
+        raise LoanProcessingError(f"Loan #{loan.id} has already been cleared.", status_code=409)
+    clearance = ReapplicationClearance(loan_id=loan.id, cleared_by=admin.id, reason=reason)
+    db.session.add(clearance)
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        raise LoanProcessingError(f"Loan #{loan.id} has already been cleared.", status_code=409)
+    audit.record(
+        "reapplication_block_cleared",
+        actor_id=admin.id,
+        entity_type="Loan",
+        entity_id=loan.id,
+        details={"customer_id": loan.user_id, "clearance_id": clearance.id, "reason": reason},
+        commit=False,
+    )
+    db.session.commit()
+    return clearance
 
 
 # ------------------------------------------------- admin decision (one call)

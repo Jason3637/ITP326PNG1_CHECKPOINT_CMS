@@ -43,6 +43,7 @@ ADMIN_ROUTES = [
     ("GET", "/api/admin/loans"),
     ("GET", "/api/admin/loans/1"),
     ("POST", "/api/admin/loans/1/write-off"),
+    ("POST", "/api/admin/loans/1/clear-reapplication-block"),
     ("GET", "/api/admin/repayments"),
     ("POST", "/api/admin/repayments/1/verify"),
     ("POST", "/api/admin/repayments/1/reject"),

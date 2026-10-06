@@ -125,6 +125,8 @@ loan_detail_out = ns.model("AdminLoanDetail", {
     "terms": fields.Raw(description="the terms snapshot - principal, category, rate, interest, original total, term, dates"),
     "balance": fields.Raw(description="from the ledger: original_obligation, penalties, verified_repayments, outstanding, days_overdue"),
     "disbursement": fields.Raw, "closure": fields.Raw,
+    "reapplication": fields.Raw(description="Written-off loans only: {blocked, cleared_at, cleared_by, "
+                                            "cleared_by_name, reason}; null otherwise"),
     "ledger": fields.List(fields.Raw), "payments": fields.List(fields.Raw), "audit_history": fields.List(fields.Raw),
 })
 reason_in = ns.model("AdminReasonInput", {
@@ -341,6 +343,21 @@ class AdminWriteOff(Resource):
     @roles_required(*_ADMIN)
     def post(self, loan_id: int):
         loan = _call(loan_processing.write_off_loan, _loan(loan_id), _admin(), _body().get("reason"))
+        return _call(admin_views.loan_detail, loan)
+
+
+@ns.route("/loans/<int:loan_id>/clear-reapplication-block")
+class AdminClearReapplicationBlock(Resource):
+    @ns.doc(**_DOC, description="Let a customer whose loan was written off apply for PRIME again. Reason "
+                                "required; audited; once per loan; can't be undone by editing.")
+    @ns.expect(reason_in, validate=False)
+    @ns.response(200, "Cleared", loan_detail_out)
+    @ns.response(400, "Reason missing", error_out)
+    @ns.response(409, "Not written off, or already cleared", error_out)
+    @roles_required(*_ADMIN)
+    def post(self, loan_id: int):
+        loan = _loan(loan_id)
+        _call(loan_processing.clear_reapplication_block, loan, _admin(), _body().get("reason"))
         return _call(admin_views.loan_detail, loan)
 
 

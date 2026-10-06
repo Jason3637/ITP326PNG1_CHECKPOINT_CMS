@@ -167,6 +167,26 @@ class LoanClosure(db.Model):
     loan = db.relationship("Loan", back_populates="closure")
 
 
+class ReapplicationClearance(db.Model):
+    """An admin's decision that a customer whose loan was written off may
+    apply for PRIME again. Until one exists for every written-off loan of
+    theirs, the customer can't apply. Insert-only: a clearance is a decision
+    on the record, never edited or withdrawn by changing this row."""
+
+    __tablename__ = "reapplication_clearances"
+
+    id = db.Column(db.Integer, primary_key=True)
+    loan_id = db.Column(
+        db.Integer, db.ForeignKey("loans.id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
+    cleared_by = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    reason = db.Column(db.String(1000), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    loan = db.relationship("Loan", back_populates="reapplication_clearance")
+    cleared_by_user = db.relationship("User", foreign_keys=[cleared_by])
+
+
 class ScheduledJobRun(db.Model):
     __tablename__ = "scheduled_job_runs"
 

@@ -404,6 +404,9 @@ loan_out = ns.model(
         "total_repayable": fields.Float,
         "status": fields.String(example="active"),
         "closure_reason": fields.String,
+        "blocks_reapplication": fields.Boolean(
+            description="Written off and not yet cleared by an admin - the customer can't apply again until it is."
+        ),
         "balance": fields.Raw(
             description="From the ledger (null for a loan with no ledger): original_obligation, "
             "penalties, verified_repayments, outstanding, due_date, days_overdue, and "
@@ -623,6 +626,9 @@ def serialize_loan(loan: Loan) -> dict:
         # penalties (each with when it applied and why). The schedule below
         # only ever holds the original amount.
         "balance": _loan_balance(loan),
+        # True only for a written-off loan an admin hasn't cleared yet: the
+        # customer can't apply for PRIME again until it's cleared.
+        "blocks_reapplication": loan.blocks_reapplication,
         "repayment_schedule": [
             {
                 "id": r.id,

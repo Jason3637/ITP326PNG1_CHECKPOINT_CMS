@@ -258,6 +258,23 @@ def list_loans(status: str = "open", page: int = 1, per_page: int = 25) -> dict:
             "items": [loan_item(loan, snap, b, today) for loan, snap, b in rows]}
 
 
+def _reapplication(loan: Loan) -> dict | None:
+    """For a written-off loan: whether it still stops the customer applying,
+    and the admin clearance if there is one. None for any other loan."""
+    from app.models.enums import LoanClosureReason
+
+    if loan.closure_reason != LoanClosureReason.DEFAULTED:
+        return None
+    c = loan.reapplication_clearance
+    return {
+        "blocked": c is None,
+        "cleared_at": _iso(c.created_at) if c else None,
+        "cleared_by": c.cleared_by if c else None,
+        "cleared_by_name": c.cleared_by_user.full_name if c and c.cleared_by_user else None,
+        "reason": c.reason if c else None,
+    }
+
+
 def loan_detail(loan: Loan) -> dict:
     snap = loan.terms_snapshot
     if snap is None:
@@ -326,6 +343,7 @@ def loan_detail(loan: Loan) -> dict:
             "repayment_duration_days": closure.repayment_duration_days,
             "timeliness": closure.timeliness.value if closure.timeliness else None,
         },
+        "reapplication": _reapplication(loan),
         "ledger": [ledger.serialize_entry(e) for e in loan.ledger_entries],
         "payments": [payment_processing._serialize_transaction(p)["transaction"] for p in payments],
         "audit_history": [
